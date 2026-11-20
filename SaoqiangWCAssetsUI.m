@@ -772,6 +772,13 @@ static const CGFloat SaoqiangWCAssetsSheetGrabberHeight = 18;
 @property(nonatomic) BOOL SaoqiangWCAssetsOwnUICounted;
 @property(nonatomic) BOOL SaoqiangWCAssetsPendingRefresh;
 @property(nonatomic) BOOL SaoqiangWCAssetsPendingReset;
+// 0.11.44: what the rows on screen were built from. A tick that finds the same
+// inputs reuses them instead of walking the whole record list again.
+@property(nonatomic) NSUInteger SaoqiangWCAssetsBuiltRevision;
+@property(nonatomic,copy) NSString *SaoqiangWCAssetsBuiltQuery;
+@property(nonatomic) SaoqiangWCAssetsFilterKind SaoqiangWCAssetsBuiltFilter;
+@property(nonatomic) BOOL SaoqiangWCAssetsBuiltTools;
+@property(nonatomic) BOOL SaoqiangWCAssetsBuiltValid;
 @property(nonatomic) BOOL SaoqiangWCAssetsContextOpen;
 @property(nonatomic) NSUInteger SaoqiangWCAssetsCurrentCount;
 @property(nonatomic) NSUInteger SaoqiangWCAssetsSVGCount;
@@ -1581,6 +1588,14 @@ static void SaoqiangWCAssetsInstallGlobalPress(void) {
     self.SaoqiangWCAssetsTimer = [NSTimer timerWithTimeInterval:1 repeats:YES block:^(NSTimer *timer) {
         typeof(self) owner = weakSelf;
         if (!owner) { [timer invalidate]; return; }
+        // 0.11.44: this timer runs in common modes, so it ticked *through* every
+        // scroll. Doing the work then forced a rebuild under the moving finger —
+        // the dropped frames. Defer to the scroll-ended callbacks instead.
+        UITableView *table = owner.SaoqiangWCAssetsTable;
+        if (!owner.SaoqiangWCAssetsThemeTab && (table.tracking || table.dragging ||
+            table.decelerating || owner.SaoqiangWCAssetsContextOpen)) {
+            owner.SaoqiangWCAssetsPendingRefresh = YES; return;
+        }
         [owner SaoqiangWCAssetsRefreshTheme];
         if (!owner.presentedViewController && !owner.SaoqiangWCAssetsBusy) [owner SaoqiangWCAssetsRefresh:NO];
     }];
@@ -1684,10 +1699,17 @@ static void SaoqiangWCAssetsInstallGlobalPress(void) {
     SaoqiangWCAssetsPushSuppression();
     @try {
         SaoqiangWCAssetsStore *store = [SaoqiangWCAssetsStore SaoqiangWCAssetsShared];
-        NSString *runtimeID = [store SaoqiangWCAssetsCollectionState][@"runtimeID"];
-        NSMutableArray *rows = [NSMutableArray new], *identities = [NSMutableArray new]; NSMutableDictionary *current = [NSMutableDictionary new];
         NSString *query = [self.SaoqiangWCAssetsSearch.text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] ?: @"";
         SaoqiangWCAssetsFilterKind filter = self.SaoqiangWCAssetsLastListFilter; BOOL tools = self.SaoqiangWCAssetsThemeTab;
+        NSUInteger revision = [store SaoqiangWCAssetsRevision];
+        // 0.11.44: nothing new captured and nothing the user changed, so the rows
+        // already on screen are still correct. This is what makes an idle panel
+        // cost nothing per tick instead of a full rebuild.
+        if (!reset && self.SaoqiangWCAssetsBuiltValid && revision == self.SaoqiangWCAssetsBuiltRevision &&
+            filter == self.SaoqiangWCAssetsBuiltFilter && tools == self.SaoqiangWCAssetsBuiltTools &&
+            [query isEqualToString:self.SaoqiangWCAssetsBuiltQuery ?: @""]) return;
+        NSString *runtimeID = [store SaoqiangWCAssetsCollectionState][@"runtimeID"];
+        NSMutableArray *rows = [NSMutableArray new], *identities = [NSMutableArray new]; NSMutableDictionary *current = [NSMutableDictionary new];
         self.SaoqiangWCAssetsCurrentCount = self.SaoqiangWCAssetsSVGCount = self.SaoqiangWCAssetsPNGCount = 0;
         self.SaoqiangWCAssetsNativeCount = 0;
         for (SaoqiangWCAssetsRecord *record in [store SaoqiangWCAssetsSnapshot].reverseObjectEnumerator) {
@@ -1718,6 +1740,9 @@ static void SaoqiangWCAssetsInstallGlobalPress(void) {
             NSString *anchor = !reset && first && (NSUInteger)first.row < self.SaoqiangWCAssetsRows.count ? self.SaoqiangWCAssetsRows[first.row].identity : nil;
             CGFloat offset = first ? table.contentOffset.y - [table rectForRowAtIndexPath:first].origin.y : 0;
             self.SaoqiangWCAssetsRows = rows; self.SaoqiangWCAssetsIdentities = identities;
+            self.SaoqiangWCAssetsBuiltRevision = revision; self.SaoqiangWCAssetsBuiltQuery = [query copy];
+            self.SaoqiangWCAssetsBuiltFilter = filter; self.SaoqiangWCAssetsBuiltTools = tools;
+            self.SaoqiangWCAssetsBuiltValid = YES;
             [UIView performWithoutAnimation:^{
                 if (changed) { [table reloadData]; [table layoutIfNeeded]; }
                 else for (NSIndexPath *path in table.indexPathsForVisibleRows) if ((NSUInteger)path.row < rows.count) [self SaoqiangWCAssetsBindCell:(SaoqiangWCAssetsCell *)[table cellForRowAtIndexPath:path] record:rows[path.row]];
@@ -1739,11 +1764,20 @@ static void SaoqiangWCAssetsInstallGlobalPress(void) {
     } @finally { SaoqiangWCAssetsPopSuppression(); }
 }
 - (void)SaoqiangWCAssetsSyncSelection {
-    [self.SaoqiangWCAssetsRows enumerateObjectsUsingBlock:^(SaoqiangWCAssetsRecord *record, NSUInteger index, BOOL *stop) {
-        NSIndexPath *path = [NSIndexPath indexPathForRow:index inSection:0];
-        if (record.identity.length && self.SaoqiangWCAssetsSelected[record.identity]) [self.SaoqiangWCAssetsTable selectRowAtIndexPath:path animated:NO scrollPosition:UITableViewScrollPositionNone];
-        else [self.SaoqiangWCAssetsTable deselectRowAtIndexPath:path animated:NO];
-    }];
+    // 0.11.44: only the rows the table is actually showing. The old loop built an
+    // index path and called select/deselect for every captured record, on every
+    // tick — O(n) table traffic for a handful of visible cells. Rows that scroll
+    // in are synced by -tableView:willDisplayCell: instead.
+    UITableView *table = self.SaoqiangWCAssetsTable;
+    NSSet *selectedPaths = [NSSet setWithArray:table.indexPathsForSelectedRows ?: @[]];
+    for (NSIndexPath *path in table.indexPathsForVisibleRows) {
+        if ((NSUInteger)path.row >= self.SaoqiangWCAssetsRows.count) continue;
+        SaoqiangWCAssetsRecord *record = self.SaoqiangWCAssetsRows[path.row];
+        BOOL selected = record.identity.length && self.SaoqiangWCAssetsSelected[record.identity] != nil;
+        if (selected == [selectedPaths containsObject:path]) continue;
+        if (selected) [table selectRowAtIndexPath:path animated:NO scrollPosition:UITableViewScrollPositionNone];
+        else [table deselectRowAtIndexPath:path animated:NO];
+    }
 }
 - (void)SaoqiangWCAssetsUpdateSelection {
     NSUInteger count = self.SaoqiangWCAssetsSelected.count;
@@ -1767,6 +1801,16 @@ static void SaoqiangWCAssetsInstallGlobalPress(void) {
 }
 - (void)scrollViewDidEndDragging:(UIScrollView *)scrollView willDecelerate:(BOOL)decelerate { if (!decelerate && self.SaoqiangWCAssetsPendingRefresh) [self SaoqiangWCAssetsRefresh:NO]; }
 - (void)scrollViewDidEndDecelerating:(UIScrollView *)scrollView { if (self.SaoqiangWCAssetsPendingRefresh) [self SaoqiangWCAssetsRefresh:NO]; }
+// Selection is now restored only for visible rows, so a row that scrolls in has
+// to bring its own state with it.
+- (void)tableView:(UITableView *)tableView willDisplayCell:(UITableViewCell *)cell forRowAtIndexPath:(NSIndexPath *)indexPath {
+    if ((NSUInteger)indexPath.row >= self.SaoqiangWCAssetsRows.count) return;
+    SaoqiangWCAssetsRecord *record = self.SaoqiangWCAssetsRows[indexPath.row];
+    BOOL selected = record.identity.length && self.SaoqiangWCAssetsSelected[record.identity] != nil;
+    cell.selected = selected;
+    if (selected) [tableView selectRowAtIndexPath:indexPath animated:NO scrollPosition:UITableViewScrollPositionNone];
+    else [tableView deselectRowAtIndexPath:indexPath animated:NO];
+}
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section { return self.SaoqiangWCAssetsRows.count; }
 - (void)SaoqiangWCAssetsBindCell:(SaoqiangWCAssetsCell *)cell record:(SaoqiangWCAssetsRecord *)record {
     NSString *name = SaoqiangWCAssetsHasOriginalName(record) ? record.name : @"无原始资源名";
@@ -1850,16 +1894,24 @@ static void SaoqiangWCAssetsInstallGlobalPress(void) {
 }
 - (void)SaoqiangWCAssetsRefreshTheme {
     NSDictionary *state = SaoqiangWCAssetsThemePackState(); BOOL busy = SaoqiangWCAssetsThemeRequestPending || SaoqiangWCAssetsThemeRetrying || [state[@"busy"] boolValue];
-    [self.SaoqiangWCAssetsThemeButton setTitle:busy ? @"取消主题导出" : @"当前主题素材一键导出" forState:UIControlStateNormal];
-    self.SaoqiangWCAssetsThemeButton.enabled = !self.SaoqiangWCAssetsBusy && !(busy && SaoqiangWCAssetsThemeCancelRequested);
+    // 0.11.44: this runs on every tick and every selection change, but almost
+    // always renders the same two strings. Assigning them anyway invalidated the
+    // button and label layout each second, which is visible during a scroll.
+    NSString *title = busy ? @"取消主题导出" : @"当前主题素材一键导出";
+    if (![[self.SaoqiangWCAssetsThemeButton titleForState:UIControlStateNormal] isEqualToString:title])
+        [self.SaoqiangWCAssetsThemeButton setTitle:title forState:UIControlStateNormal];
+    BOOL enabled = !self.SaoqiangWCAssetsBusy && !(busy && SaoqiangWCAssetsThemeCancelRequested);
+    if (self.SaoqiangWCAssetsThemeButton.enabled != enabled) self.SaoqiangWCAssetsThemeButton.enabled = enabled;
+    NSString *progress;
     if (SaoqiangWCAssetsThemeRetrying) {
-        self.SaoqiangWCAssetsThemeProgress.text = [NSString stringWithFormat:@"主题资源加载中，正在自动打包（第 %lu 次）…\n首次进入主题时资源延迟加载，稍候会自动完成，无需再次点击。", (unsigned long)(SaoqiangWCAssetsThemeEmptyRetries + 1)];
+        progress = [NSString stringWithFormat:@"主题资源加载中，正在自动打包（第 %lu 次）…\n首次进入主题时资源延迟加载，稍候会自动完成，无需再次点击。", (unsigned long)(SaoqiangWCAssetsThemeEmptyRetries + 1)];
     } else if (busy) {
-        self.SaoqiangWCAssetsThemeProgress.text = [NSString stringWithFormat:@"%@ · %@\n处理 %@ / %@ · 已导出 %@ · 未取到 %@ · 读取/写入失败 %@\n重名已保留 %@ · 格式提示 %@\n可关闭面板，返回工具页查看。", state[@"themeName"] ?: @"当前主题", SaoqiangWCAssetsThemeCancelRequested ? @"正在取消…" : (state[@"stage"] ?: @"定位主题"), state[@"processed"] ?: @0, state[@"total"] ?: state[@"expected"] ?: @0, state[@"written"] ?: @0, state[@"missing"] ?: @0, state[@"failed"] ?: @0, state[@"conflicts"] ?: @0, state[@"unsupported"] ?: @0];
-    } else if ([SaoqiangWCAssetsLastThemeSummary[@"cancelled"] boolValue]) self.SaoqiangWCAssetsThemeProgress.text = @"已取消主题导出，可点上方按钮重试。";
-    else if (SaoqiangWCAssetsLastThemeFolder && SaoqiangWCAssetsThemeAvailable(SaoqiangWCAssetsLastThemeSummary)) self.SaoqiangWCAssetsThemeProgress.text = [SaoqiangWCAssetsThemeReceipt(SaoqiangWCAssetsLastThemeSummary) stringByAppendingString:@"\n已导出文件可稍后点上方按钮保存或重新导出。"];
-    else if (SaoqiangWCAssetsLastThemeSummary) self.SaoqiangWCAssetsThemeProgress.text = [SaoqiangWCAssetsThemeReceipt(SaoqiangWCAssetsLastThemeSummary) stringByAppendingString:@"\n暂无可保存文件，点上方按钮重试。"];
-    else self.SaoqiangWCAssetsThemeProgress.text = @"点击上方按钮，自动读取当前微信主题内的全部素材并打包。\n完成后可选择保存到“文件”或直接分享。";
+        progress = [NSString stringWithFormat:@"%@ · %@\n处理 %@ / %@ · 已导出 %@ · 未取到 %@ · 读取/写入失败 %@\n重名已保留 %@ · 格式提示 %@\n可关闭面板，返回工具页查看。", state[@"themeName"] ?: @"当前主题", SaoqiangWCAssetsThemeCancelRequested ? @"正在取消…" : (state[@"stage"] ?: @"定位主题"), state[@"processed"] ?: @0, state[@"total"] ?: state[@"expected"] ?: @0, state[@"written"] ?: @0, state[@"missing"] ?: @0, state[@"failed"] ?: @0, state[@"conflicts"] ?: @0, state[@"unsupported"] ?: @0];
+    } else if ([SaoqiangWCAssetsLastThemeSummary[@"cancelled"] boolValue]) progress = @"已取消主题导出，可点上方按钮重试。";
+    else if (SaoqiangWCAssetsLastThemeFolder && SaoqiangWCAssetsThemeAvailable(SaoqiangWCAssetsLastThemeSummary)) progress = [SaoqiangWCAssetsThemeReceipt(SaoqiangWCAssetsLastThemeSummary) stringByAppendingString:@"\n已导出文件可稍后点上方按钮保存或重新导出。"];
+    else if (SaoqiangWCAssetsLastThemeSummary) progress = [SaoqiangWCAssetsThemeReceipt(SaoqiangWCAssetsLastThemeSummary) stringByAppendingString:@"\n暂无可保存文件，点上方按钮重试。"];
+    else progress = @"点击上方按钮，自动读取当前微信主题内的全部素材并打包。\n完成后可选择保存到“文件”或直接分享。";
+    if (![self.SaoqiangWCAssetsThemeProgress.text isEqualToString:progress]) self.SaoqiangWCAssetsThemeProgress.text = progress;
 }
 - (void)SaoqiangWCAssetsReferenceMenu {
     if(self.SaoqiangWCAssetsBusy||SaoqiangWCAssetsThemeRequestPending||[SaoqiangWCAssetsThemePackState()[@"busy"]boolValue]){[self SaoqiangWCAssetsToast:@"请先结束当前导出"];return;}

@@ -124,6 +124,26 @@ static UIImage *SaoqiangWCAssetsThumbnail(NSData *data) {
     CGImageRef cg = CGImageSourceCreateThumbnailAtIndex(source, 0, (__bridge CFDictionaryRef)options); UIImage *image = cg ? [UIImage imageWithCGImage:cg] : nil;
     if (cg) CGImageRelease(cg); CFRelease(source); SaoqiangWCAssetsMarkOwnImage(image); return image;
 }
+// 0.11.44: draw the row thumbnail straight from the already-decoded image.
+// Decoding the stored bytes again only worked for formats ImageIO understands,
+// so an SVG icon with its original bytes had no preview at all once we stopped
+// re-encoding it as PNG.
+static UIImage *SaoqiangWCAssetsThumbnailImage(UIImage *image) {
+    if (!image) return nil;
+    CGSize point = image.size; CGFloat scale = image.scale > 0 ? image.scale : 1;
+    if (!(point.width > 0) || !(point.height > 0)) return nil;
+    CGFloat longest = MAX(point.width, point.height) * scale;
+    CGFloat ratio = longest > 100 ? 100 / longest : 1;
+    CGSize target = CGSizeMake(MAX(1, point.width * ratio), MAX(1, point.height * ratio));
+    UIImage *texture = image.CGImage ? [UIImage imageWithCGImage:image.CGImage scale:scale orientation:image.imageOrientation] : image;
+    UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
+    format.scale = 1; format.opaque = NO;
+    UIImage *thumb = [[[UIGraphicsImageRenderer alloc] initWithSize:target format:format] imageWithActions:^(UIGraphicsImageRendererContext *context) {
+        [texture drawInRect:(CGRect){CGPointZero, target}];
+    }];
+    SaoqiangWCAssetsMarkOwnImage(thumb);
+    return thumb;
+}
 static NSData *SaoqiangWCAssetsRender(UIImage *image) {
     if (!image) return nil; CGFloat w = image.size.width * image.scale, h = image.size.height * image.scale;
     if (!isfinite(w) || !isfinite(h) || w <= 0 || h <= 0 || w*h > 4*1024*1024 || w > 8192 || h > 8192) return nil;
@@ -140,7 +160,7 @@ static NSData *SaoqiangWCAssetsRender(UIImage *image) {
 @interface SaoqiangWCAssetsStore () {
     NSLock *_lock; dispatch_queue_t _queue;
     BOOL _enabled, _active;
-    NSUInteger _pending, _epoch, _total, _dropped;
+    NSUInteger _pending, _epoch, _total, _dropped, _revision;
     NSString *_runtimeSession, *_pageKey;
     NSMutableArray<SaoqiangWCAssetsRecord *> *_records;
     NSMapTable<UIImage *,NSDictionary *> *_seen;
@@ -159,9 +179,10 @@ static NSData *SaoqiangWCAssetsRender(UIImage *image) {
 - (void)SaoqiangWCAssetsSetEnabled:(BOOL)enabled {
     // Stop/start invalidates queued work, but must not discard the association
     // between an existing image and its captured row (late names replace it).
-    [_lock lock]; _enabled=enabled; ++_epoch; [_lock unlock];
+    [_lock lock]; _enabled=enabled; ++_epoch; ++_revision; [_lock unlock];
     if (enabled) dispatch_async(dispatch_get_main_queue(),^{SaoqiangWCAssetsCaptureVisiblePage();});
 }
+- (NSUInteger)SaoqiangWCAssetsRevision { [_lock lock]; NSUInteger r=_revision; [_lock unlock]; return r; }
 - (void)SaoqiangWCAssetsSetAppActive:(BOOL)active { [_lock lock]; _active=active; [_lock unlock]; }
 - (void)SaoqiangWCAssetsSetPageKey:(NSString *)key {
     if (!key.length) return;
@@ -174,7 +195,7 @@ static NSData *SaoqiangWCAssetsRender(UIImage *image) {
     [_lock unlock];
 }
 - (void)SaoqiangWCAssetsClear {
-    [_lock lock]; ++_epoch; [_records removeAllObjects]; [_seen removeAllObjects]; _total=0; _dropped=0; _runtimeSession=NSUUID.UUID.UUIDString; [_lock unlock];
+    [_lock lock]; ++_epoch; ++_revision; [_records removeAllObjects]; [_seen removeAllObjects]; _total=0; _dropped=0; _runtimeSession=NSUUID.UUID.UUIDString; [_lock unlock];
 }
 - (NSArray *)SaoqiangWCAssetsSnapshot { [_lock lock]; NSArray *a=[_records copy]; [_lock unlock]; return a; }
 - (void)SaoqiangWCAssetsAfterPending:(dispatch_block_t)completion { dispatch_async(_queue,^{dispatch_async(dispatch_get_main_queue(),completion);}); }
@@ -198,7 +219,11 @@ static NSData *SaoqiangWCAssetsRender(UIImage *image) {
     BOOL fileSource=NO;
     if (!raw.length && path.length && [path isEqual:SaoqiangWCAssetsObservedFilePath(image)]) { raw=SaoqiangWCAssetsRead(path); fileSource=raw.length>0; }
     NSString *kind=SaoqiangWCAssetsKind(raw,@"svg"); if ([kind isEqual:@"OTHER"]) raw=nil;
-    NSData *rendered=SaoqiangWCAssetsRender(image); if (!raw.length && !rendered.length) return nil;
+    // 0.11.44: only encode a PNG when there is no original byte stream. The old
+    // code re-rendered every icon unconditionally and then dropped the result
+    // whenever `raw` existed — a full UIGraphicsImageRenderer + PNG encode per
+    // captured icon, which is exactly the background churn that dropped frames.
+    NSData *rendered=raw.length?nil:SaoqiangWCAssetsRender(image); if (!raw.length && !rendered.length) return nil;
     SaoqiangWCAssetsRecord *r=[SaoqiangWCAssetsRecord new]; r.bytes=raw.length?raw:rendered; r.original=raw.length>0;
     r.renderedBytes=raw.length?rendered:nil; r.kind=raw.length?kind:@"PNG"; r.extension=[r.kind isEqual:@"SVG"]?@"svg":([r.kind isEqual:@"JPEG"]?@"jpg":@"png");
     r.name=info[@"name"]; r.source=info[@"source"]; r.svgResource=[info[@"svg"] boolValue]||[r.kind isEqual:@"SVG"]; r.bubble=[info[@"bubble"] boolValue];
@@ -206,7 +231,8 @@ static NSData *SaoqiangWCAssetsRender(UIImage *image) {
     r.provenance=r.original?(fileSource?@"实际加载路径读取的原始文件":@"同一次加载取得的原始数据"):@"只有界面图片，保存为 PNG 快照；原文件未取得";
     r.origin=@"runtime"; r.collectionID=@"page"; r.themeName=@"";
     r.pointSize=size.width>0&&size.height>0?size:image.size; r.pixelSize=CGSizeMake(image.size.width*image.scale,image.size.height*image.scale);
-    r.capInsets=image.capInsets; r.resizingMode=image.resizingMode; r.thumbnail=SaoqiangWCAssetsThumbnail(rendered?:r.bytes);
+    r.capInsets=image.capInsets; r.resizingMode=image.resizingMode;
+    r.thumbnail=SaoqiangWCAssetsThumbnail(rendered?:r.bytes) ?: SaoqiangWCAssetsThumbnailImage(image);
     NSString *key=[NSString stringWithFormat:@"%@|%@|%@|%.2fx%.2f|%@",r.name,r.kind,SaoqiangWCAssetsHash(r.bytes),r.pointSize.width,r.pointSize.height,NSStringFromUIEdgeInsets(r.capInsets)];
     r.identity=SaoqiangWCAssetsHash([key dataUsingEncoding:NSUTF8StringEncoding]); return r;
 }
@@ -249,7 +275,7 @@ static NSData *SaoqiangWCAssetsRender(UIImage *image) {
                 }
                 NSUInteger oldBytes=replace==NSNotFound?0:((SaoqiangWCAssetsRecord *)_records[replace]).bytes.length+((SaoqiangWCAssetsRecord *)_records[replace]).renderedBytes.length;
                 BOOL room=_records.count<1000 && _total-oldBytes+r.bytes.length+r.renderedBytes.length<=SaoqiangWCAssetsMaxTotal;
-                if (_enabled&&epoch==_epoch&&!same&&room) { if (replace!=NSNotFound) {_records[replace]=r; _total-=oldBytes;} else [_records addObject:r]; _total+=r.bytes.length+r.renderedBytes.length; }
+                if (_enabled&&epoch==_epoch&&!same&&room) { if (replace!=NSNotFound) {_records[replace]=r; _total-=oldBytes;} else [_records addObject:r]; _total+=r.bytes.length+r.renderedBytes.length; ++_revision; }
                 else if (!same&&!room) ++_dropped;
                 [_lock unlock];
                 SaoqiangWCAssetsSetImageIdentityForRevision(image,r.identity,[info[@"revision"] unsignedIntegerValue]);

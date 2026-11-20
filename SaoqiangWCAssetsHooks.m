@@ -3,7 +3,9 @@
 #import "SaoqiangWCAssetsTheme.h"
 #import <objc/runtime.h>
 #import <string.h>
+#import <limits.h>
 #import <dlfcn.h>
+#import <mach-o/dyld.h>
 
 static _Thread_local unsigned SaoqiangWCAssetsHookDepth;
 static NSMutableArray<NSDictionary *> *SaoqiangWCAssetsDiagnostics;
@@ -195,54 +197,52 @@ static UIImage *(*SaoqiangWCAssetsOriginalFile)(id, SEL, NSString *);
 // load in the process, and an exception frame per call is pure overhead when
 // nothing throws. Unwinding still runs the cleanup, so the depth stays correct.
 static void SaoqiangWCAssetsDepthRelease(unsigned **slot) { if (slot && *slot && **slot) --**slot; }
-static UIImage *SaoqiangWCAssetsNamed(id receiver, SEL cmd, NSString *name) {
-    if (!SaoqiangWCAssetsMasterEnabled()) return SaoqiangWCAssetsOriginalNamed(receiver, cmd, name);
-    if (!SaoqiangWCAssetsIconCaptureActive()) {
-        // Capture off: still memoise the CGImage→name pair. The icons the user
-        // opens the panel for are usually loaded now and sampled later, so this
-        // is the only chance to learn their names.
-        UIImage *image = SaoqiangWCAssetsOriginalNamed(receiver, cmd, name);
-        SaoqiangWCAssetsRememberCGName(image, name);
-        return image;
-    }
+// Every name-bearing route does the same three things: forward the call inside a
+// name scope, record the load when capture is running, and hand the image back.
+// Four copies of that body used to drift between the routes; one helper now.
+static UIImage *SaoqiangWCAssetsNamedRoute(NSString *scopeName, NSString *recordName, NSString *source,
+                                           NSString *path, BOOL svg, UIImage *(^call)(void)) {
     UIImage *image;
     {
         ++SaoqiangWCAssetsHookDepth;
         unsigned *__attribute__((cleanup(SaoqiangWCAssetsDepthRelease))) release = &SaoqiangWCAssetsHookDepth;
         (void)release;
-        image = SaoqiangWCAssetsCallNamedSource(SaoqiangWCAssetsSafeRendererName(name) ? name : @"", @"运行时 UIImage imageNamed:", NO, ^id {
+        image = SaoqiangWCAssetsCallNamedSource(scopeName ?: @"", source, NO, call);
+    }
+    if (!SaoqiangWCAssetsHookDepth && recordName.length) SaoqiangWCAssetsCapture(image, recordName, source, path, svg);
+    return image;
+}
+// Capture idle: still memoise CGImage→name. The icons this panel exists for were
+// loaded long before 开始抓取, so this is the only chance to learn their names.
+static UIImage *SaoqiangWCAssetsMemoized(UIImage *image, NSString *name) {
+    SaoqiangWCAssetsRememberCGName(image, name); return image;
+}
+static UIImage *SaoqiangWCAssetsNamed(id receiver, SEL cmd, NSString *name) {
+    if (!SaoqiangWCAssetsMasterEnabled()) return SaoqiangWCAssetsOriginalNamed(receiver, cmd, name);
+    if (!SaoqiangWCAssetsIconCaptureActive()) return SaoqiangWCAssetsMemoized(SaoqiangWCAssetsOriginalNamed(receiver, cmd, name), name);
+    return SaoqiangWCAssetsNamedRoute(SaoqiangWCAssetsSafeRendererName(name) ? name : @"", name,
+        @"运行时 UIImage imageNamed:", nil, NO, ^UIImage *(void) {
             return SaoqiangWCAssetsOriginalNamed(receiver, cmd, name);
         });
-    }
-    if (!SaoqiangWCAssetsHookDepth) SaoqiangWCAssetsCapture(image, name, @"运行时 UIImage imageNamed:", nil, NO); return image;
 }
 static UIImage *SaoqiangWCAssetsBundle(id receiver, SEL cmd, NSString *name, NSBundle *bundle, UITraitCollection *traits) {
     if (!SaoqiangWCAssetsMasterEnabled()) return SaoqiangWCAssetsOriginalBundle(receiver, cmd, name, bundle, traits);
-    BOOL mainBundle = !bundle || [bundle.bundlePath.stringByStandardizingPath isEqual:NSBundle.mainBundle.bundlePath.stringByStandardizingPath];
+    static NSString *mainPath; static dispatch_once_t once;
+    dispatch_once(&once, ^{ mainPath = NSBundle.mainBundle.bundlePath.stringByStandardizingPath; });
+    BOOL mainBundle = !bundle || [bundle.bundlePath.stringByStandardizingPath isEqual:mainPath];
     if (!SaoqiangWCAssetsIconCaptureActive()) {
         UIImage *image = SaoqiangWCAssetsOriginalBundle(receiver, cmd, name, bundle, traits);
-        if (mainBundle) SaoqiangWCAssetsRememberCGName(image, name);
-        return image;
+        return mainBundle ? SaoqiangWCAssetsMemoized(image, name) : image;
     }
-    UIImage *image;
-    {
-        ++SaoqiangWCAssetsHookDepth;
-        unsigned *__attribute__((cleanup(SaoqiangWCAssetsDepthRelease))) release = &SaoqiangWCAssetsHookDepth;
-        (void)release;
-        image = SaoqiangWCAssetsCallNamedSource(mainBundle && SaoqiangWCAssetsSafeRendererName(name) ? name : @"", @"运行时 UIImage imageNamed:inBundle:", NO, ^id {
+    return SaoqiangWCAssetsNamedRoute(mainBundle && SaoqiangWCAssetsSafeRendererName(name) ? name : @"",
+        mainBundle ? name : nil, @"运行时 UIImage imageNamed:inBundle:", nil, NO, ^UIImage *(void) {
             return SaoqiangWCAssetsOriginalBundle(receiver, cmd, name, bundle, traits);
         });
-    }
-    if (!SaoqiangWCAssetsHookDepth && mainBundle) SaoqiangWCAssetsCapture(image, name, @"运行时 UIImage imageNamed:inBundle:", nil, NO);
-    return image;
 }
 static UIImage *SaoqiangWCAssetsFile(id receiver, SEL cmd, NSString *path) {
     if (!SaoqiangWCAssetsMasterEnabled()) return SaoqiangWCAssetsOriginalFile(receiver, cmd, path);
-    if (!SaoqiangWCAssetsIconCaptureActive()) {
-        UIImage *image = SaoqiangWCAssetsOriginalFile(receiver, cmd, path);
-        SaoqiangWCAssetsRememberCGName(image, path.lastPathComponent);
-        return image;
-    }
+    NSString *name = path.lastPathComponent;
+    if (!SaoqiangWCAssetsIconCaptureActive()) return SaoqiangWCAssetsMemoized(SaoqiangWCAssetsOriginalFile(receiver, cmd, path), name);
     UIImage *image;
     {
         ++SaoqiangWCAssetsHookDepth;
@@ -253,8 +253,8 @@ static UIImage *SaoqiangWCAssetsFile(id receiver, SEL cmd, NSString *path) {
     // This association alone never creates a record. A verified bubble owner may
     // later prove this exact image is a background, including a theme path.
     SaoqiangWCAssetsAssociateFilePath(image, path);
-    if (SaoqiangWCAssetsBubbleName(path) && SaoqiangWCAssetsCanCapture()) SaoqiangWCAssetsAssociateBubbleCandidate(image,path.lastPathComponent);
-    if (!SaoqiangWCAssetsHookDepth) SaoqiangWCAssetsCapture(image, path.lastPathComponent, @"运行时 UIImage imageWithContentsOfFile:", path, NO);
+    if (SaoqiangWCAssetsBubbleName(path) && SaoqiangWCAssetsCanCapture()) SaoqiangWCAssetsAssociateBubbleCandidate(image,name);
+    if (!SaoqiangWCAssetsHookDepth) SaoqiangWCAssetsCapture(image, name, @"运行时 UIImage imageWithContentsOfFile:", path, NO);
     SaoqiangWCAssetsRememberBacking(image);
     return image;
 }
@@ -263,6 +263,19 @@ static void SaoqiangWCAssetsReplace(Class cls, SEL sel, IMP replacement, IMP *or
     *original = method_getImplementation(m);
     if (!class_addMethod(cls, sel, replacement, method_getTypeEncoding(m))) *original = method_setImplementation(class_getInstanceMethod(cls, sel), replacement);
 }
+// Class-origin tests run thousands of times per discovery pass. The old form
+// built a fresh NSString for the bundle path and another for every class image
+// name, which dominated the launch hitch: cache the prefix once and compare the
+// raw C strings.
+static BOOL SaoqiangWCAssetsHostImage(const char *image) {
+    static char prefix[PATH_MAX]; static size_t length; static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        const char *path = NSBundle.mainBundle.bundlePath.UTF8String ?: "";
+        length = MIN(strlen(path), sizeof(prefix) - 2);
+        memcpy(prefix, path, length); prefix[length++] = '/';
+    });
+    return image && length && !strncmp(image, prefix, length);
+}
 static BOOL SaoqiangWCAssetsObjectType(const char *t) { return t && (!strcmp(t, "@") || !strncmp(t, "@\"", 2)); }
 static BOOL SaoqiangWCAssetsObjectsSignature(NSMethodSignature *s, NSUInteger count) {
     if (!s || s.numberOfArguments != count || !SaoqiangWCAssetsObjectType(s.methodReturnType) || strcmp([s getArgumentTypeAtIndex:0], "@") || strcmp([s getArgumentTypeAtIndex:1], ":")) return NO;
@@ -270,13 +283,12 @@ static BOOL SaoqiangWCAssetsObjectsSignature(NSMethodSignature *s, NSUInteger co
     return YES;
 }
 static BOOL SaoqiangWCAssetsHostClass(Class cls) {
-    const char *image = cls ? class_getImageName(cls) : NULL;
-    return image && [@(image) hasPrefix:[NSBundle.mainBundle.bundlePath stringByAppendingString:@"/"]];
+    return cls ? SaoqiangWCAssetsHostImage(class_getImageName(cls)) : NO;
 }
 static BOOL SaoqiangWCAssetsHostMethod(Method m) {
     if (!m) return NO;
     Dl_info info = {0}; dladdr((const void *)method_getImplementation(m), &info);
-    return info.dli_fname && [@(info.dli_fname) hasPrefix:[NSBundle.mainBundle.bundlePath stringByAppendingString:@"/"]];
+    return SaoqiangWCAssetsHostImage(info.dli_fname);
 }
 static NSData *SaoqiangWCAssetsRawSVG(id value) {
     if (![value isKindOfClass:NSData.class] || ![value length] || [value length] > 512 * 1024) return nil;
@@ -351,26 +363,14 @@ static UIImage *SaoqiangWCAssetsThemeNamed(id receiver, SEL cmd, NSString *name)
     UIImage *(*original)(id, SEL, NSString *) = (UIImage *(*)(id, SEL, NSString *))SaoqiangWCAssetsOriginalThemeNamed;
     if (!original) return nil;
     if (!SaoqiangWCAssetsMasterEnabled()) return original(receiver, cmd, name);
-    if (!SaoqiangWCAssetsIconCaptureActive()) {
-        // Same reasoning as +imageNamed: the icons the panel exists for are
-        // loaded before 开始抓取, so keep the CGImage→name memo warm anyway.
-        UIImage *image = original(receiver, cmd, name);
-        SaoqiangWCAssetsRememberCGName(image, name);
-        return image;
-    }
-    UIImage *image;
-    {
-        ++SaoqiangWCAssetsHookDepth;
-        unsigned *__attribute__((cleanup(SaoqiangWCAssetsDepthRelease))) release = &SaoqiangWCAssetsHookDepth;
-        (void)release;
-        image = SaoqiangWCAssetsCallNamedSource(SaoqiangWCAssetsSafeRendererName(name) ? name : @"", SaoqiangWCAssetsThemeNamedSource, NO, ^id {
+    if (!SaoqiangWCAssetsIconCaptureActive()) return SaoqiangWCAssetsMemoized(original(receiver, cmd, name), name);
+    UIImage *image = SaoqiangWCAssetsNamedRoute(SaoqiangWCAssetsSafeRendererName(name) ? name : @"", name,
+        SaoqiangWCAssetsThemeNamedSource, nil, NO, ^UIImage *(void) {
             return original(receiver, cmd, name);
         });
-    }
     // Remember the name even when the record whitelist rejects it: a displayed
     // page icon with a real, checkable name beats another empty row.
     SaoqiangWCAssetsRememberCGName(image, name);
-    if (!SaoqiangWCAssetsHookDepth) SaoqiangWCAssetsCapture(image, name, SaoqiangWCAssetsThemeNamedSource, nil, NO);
     return image;
 }
 static id SaoqiangWCAssetsThemeSVG(id receiver, SEL cmd, id name, CGSize size, id color, double alpha, int angle, BOOL ignoreNotFound) {
@@ -508,16 +508,27 @@ void SaoqiangWCAssetsDiscoverSVG(void) {
     // The theme manager is the route WeChat actually uses for its own icons;
     // install it here as well because the class may only be visible now.
     SaoqiangWCAssetsInstallThemeManagerHooks();
+    // 0.11.44: the sweep below walks every class in the process (~40k in WeChat)
+    // and used to run at launch, on didFinishLaunching and on every return to
+    // the foreground. New classes can only appear when dyld maps another image,
+    // so the image count is a complete and free "did anything change" test.
+    static uint32_t scanned;
+    uint32_t images = _dyld_image_count();
+    if (scanned && scanned == images) return;
+    scanned = images;
     unsigned count = 0; Class *classes = objc_copyClassList(&count);
-    NSString *prefix = [NSBundle.mainBundle.bundlePath stringByAppendingString:@"/"];
     for (unsigned i=0;i<count;i++) {
         Class owner = classes[i]; const char *imageName = class_getImageName(owner);
-        if (owner != UIImage.class && (!imageName || ![@(imageName) hasPrefix:prefix])) continue;
+        if (owner != UIImage.class && !SaoqiangWCAssetsHostImage(imageName)) continue;
         for (unsigned side=0;side<2;side++) {
             Class target = side ? object_getClass(owner) : owner; unsigned n=0; Method *methods=class_copyMethodList(target,&n);
             for (unsigned j=0;j<n;j++) {
-                Method m=methods[j]; SEL sel=method_getName(m); NSString *selector=NSStringFromSelector(sel);
-                if (![selector isEqual:@"svgImageNamed:size:color:alpha:"] && ![selector isEqual:@"svgImageNamed:size:color:angle:"]) continue;
+                Method m=methods[j]; SEL sel=method_getName(m);
+                // Compare C strings: building an NSString per method in the
+                // sweep was a per-launch allocation storm.
+                const char *selName=sel_getName(sel);
+                if (strcmp(selName,"svgImageNamed:size:color:alpha:") && strcmp(selName,"svgImageNamed:size:color:angle:")) continue;
+                NSString *selector=@(selName);
                 NSString *key=[NSString stringWithFormat:@"%c[%@ %@]",side?'+':'-',NSStringFromClass(owner),selector];
                 const char *types=method_getTypeEncoding(m); NSMethodSignature *signature=types?[NSMethodSignature signatureWithObjCTypes:types]:nil;
                 BOOL installed=[SaoqiangWCAssetsInstalled containsObject:key]; BOOL matches=SaoqiangWCAssetsSVGSignature(signature)&&(installed||SaoqiangWCAssetsHostMethod(m));
@@ -547,27 +558,30 @@ typedef UIImage *(*SaoqiangWCAssetsInitFileIMP)(__attribute__((ns_consumed)) id,
 static SaoqiangWCAssetsInitDataIMP SaoqiangWCAssetsOriginalInitData;
 static SaoqiangWCAssetsInitDataScaleIMP SaoqiangWCAssetsOriginalInitDataScale;
 static SaoqiangWCAssetsInitFileIMP SaoqiangWCAssetsOriginalInitFile;
+// Decoders all shape the same function: forward, then (only while capturing)
+// attach the byte stream so a later name can be proven against it.
+static UIImage *SaoqiangWCAssetsDecoded(UIImage *image, NSData *data) {
+    if (SaoqiangWCAssetsCanCapture()) SaoqiangWCAssetsAssociateDecodedImage(image, data);
+    return image;
+}
+static BOOL SaoqiangWCAssetsDecodeIdle(void) { return !SaoqiangWCAssetsMasterEnabled() || !SaoqiangWCAssetsIconCaptureActive(); }
 static UIImage *SaoqiangWCAssetsData(id receiver,SEL cmd,NSData *data) {
-    if (!SaoqiangWCAssetsMasterEnabled() || !SaoqiangWCAssetsIconCaptureActive()) return SaoqiangWCAssetsOriginalData(receiver,cmd,data);
-    UIImage *result=SaoqiangWCAssetsOriginalData(receiver,cmd,data);
-    if (SaoqiangWCAssetsCanCapture()) SaoqiangWCAssetsAssociateDecodedImage(result,data);return result;
+    if (SaoqiangWCAssetsDecodeIdle()) return SaoqiangWCAssetsOriginalData(receiver,cmd,data);
+    return SaoqiangWCAssetsDecoded(SaoqiangWCAssetsOriginalData(receiver,cmd,data),data);
 }
 static UIImage *SaoqiangWCAssetsDataScale(id receiver,SEL cmd,NSData *data,CGFloat scale) {
-    if (!SaoqiangWCAssetsMasterEnabled() || !SaoqiangWCAssetsIconCaptureActive()) return SaoqiangWCAssetsOriginalDataScale(receiver,cmd,data,scale);
-    UIImage *result=SaoqiangWCAssetsOriginalDataScale(receiver,cmd,data,scale);
-    if (SaoqiangWCAssetsCanCapture()) SaoqiangWCAssetsAssociateDecodedImage(result,data);return result;
+    if (SaoqiangWCAssetsDecodeIdle()) return SaoqiangWCAssetsOriginalDataScale(receiver,cmd,data,scale);
+    return SaoqiangWCAssetsDecoded(SaoqiangWCAssetsOriginalDataScale(receiver,cmd,data,scale),data);
 }
 static UIImage *SaoqiangWCAssetsInitData(__attribute__((ns_consumed)) id receiver,SEL cmd,NSData *data) __attribute__((ns_returns_retained));
 static UIImage *SaoqiangWCAssetsInitData(__attribute__((ns_consumed)) id receiver,SEL cmd,NSData *data) {
-    if (!SaoqiangWCAssetsMasterEnabled() || !SaoqiangWCAssetsIconCaptureActive()) return SaoqiangWCAssetsOriginalInitData(receiver,cmd,data);
-    UIImage *result=SaoqiangWCAssetsOriginalInitData(receiver,cmd,data);
-    if (SaoqiangWCAssetsCanCapture()) SaoqiangWCAssetsAssociateDecodedImage(result,data);return result;
+    if (SaoqiangWCAssetsDecodeIdle()) return SaoqiangWCAssetsOriginalInitData(receiver,cmd,data);
+    return SaoqiangWCAssetsDecoded(SaoqiangWCAssetsOriginalInitData(receiver,cmd,data),data);
 }
 static UIImage *SaoqiangWCAssetsInitDataScale(__attribute__((ns_consumed)) id receiver,SEL cmd,NSData *data,CGFloat scale) __attribute__((ns_returns_retained));
 static UIImage *SaoqiangWCAssetsInitDataScale(__attribute__((ns_consumed)) id receiver,SEL cmd,NSData *data,CGFloat scale) {
-    if (!SaoqiangWCAssetsMasterEnabled() || !SaoqiangWCAssetsIconCaptureActive()) return SaoqiangWCAssetsOriginalInitDataScale(receiver,cmd,data,scale);
-    UIImage *result=SaoqiangWCAssetsOriginalInitDataScale(receiver,cmd,data,scale);
-    if (SaoqiangWCAssetsCanCapture()) SaoqiangWCAssetsAssociateDecodedImage(result,data);return result;
+    if (SaoqiangWCAssetsDecodeIdle()) return SaoqiangWCAssetsOriginalInitDataScale(receiver,cmd,data,scale);
+    return SaoqiangWCAssetsDecoded(SaoqiangWCAssetsOriginalInitDataScale(receiver,cmd,data,scale),data);
 }
 static UIImage *SaoqiangWCAssetsInitFile(__attribute__((ns_consumed)) id receiver,SEL cmd,NSString *path) __attribute__((ns_returns_retained));
 static UIImage *SaoqiangWCAssetsInitFile(__attribute__((ns_consumed)) id receiver,SEL cmd,NSString *path) {
@@ -618,7 +632,12 @@ __attribute__((constructor)) static void SaoqiangWCAssetsInitialize(void) {
         dispatch_async(dispatch_get_main_queue(), ^{
             SaoqiangWCAssetsStore *s=[SaoqiangWCAssetsStore SaoqiangWCAssetsShared];
             [s SaoqiangWCAssetsSetAppActive:UIApplication.sharedApplication.applicationState==UIApplicationStateActive];
-            SaoqiangWCAssetsDiscoverTheme(); SaoqiangWCAssetsDiscoverSVG(); SaoqiangWCAssetsDiscoverBubbles(); SaoqiangWCAssetsInstallPageCapture(); SaoqiangWCAssetsInstallUI();
+            // 0.11.44: only cheap class lookups run in this turn. The one full
+            // process-wide class sweep is deferred into its own runloop turn so
+            // the host's first frame is never behind it.
+            SaoqiangWCAssetsDiscoverTheme(); SaoqiangWCAssetsDiscoverBubbles();
+            SaoqiangWCAssetsInstallPageCapture(); SaoqiangWCAssetsInstallUI();
+            dispatch_async(dispatch_get_main_queue(), ^{ SaoqiangWCAssetsDiscoverSVG(); });
             [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidFinishLaunchingNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) {
                 // Defer beyond private plugins' launch observers / initialization.
                 dispatch_async(dispatch_get_main_queue(), ^{

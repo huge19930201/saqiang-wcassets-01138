@@ -32,7 +32,7 @@ FOUNDATION_EXPORT void SaoqiangWCAssetsSetThemeCaptureEnabled(BOOL enabled);
 // Opens the panel from the plugin list entry. Presenter may be nil.
 FOUNDATION_EXPORT void SaoqiangWCAssetsPresentPanel(UIViewController * _Nullable presenter);
 // Keep in sync with the Version field in `control`.
-#define SAOQIANG_WCASSETS_VERSION @"0.11.43"
+#define SAOQIANG_WCASSETS_VERSION @"0.11.44"
 FOUNDATION_EXPORT BOOL SaoqiangWCAssetsUIName(NSString * _Nullable name);
 FOUNDATION_EXPORT BOOL SaoqiangWCAssetsBubbleName(NSString * _Nullable name);
 FOUNDATION_EXPORT void SaoqiangWCAssetsDiscoverSVG(void);
@@ -71,6 +71,9 @@ FOUNDATION_EXPORT void SaoqiangWCAssetsInspectBubbleCell(UIView *view);
 + (instancetype)SaoqiangWCAssetsShared;
 - (BOOL)SaoqiangWCAssetsEnabled;
 - (void)SaoqiangWCAssetsSetEnabled:(BOOL)enabled;
+// 0.11.44: monotonic change counter. The panel compares it instead of rebuilding
+// the whole row list once a second while nothing has actually changed.
+- (NSUInteger)SaoqiangWCAssetsRevision;
 - (void)SaoqiangWCAssetsClear;
 - (NSArray<SaoqiangWCAssetsRecord *> *)SaoqiangWCAssetsSnapshot;
 - (void)SaoqiangWCAssetsAfterPending:(dispatch_block_t)completion;

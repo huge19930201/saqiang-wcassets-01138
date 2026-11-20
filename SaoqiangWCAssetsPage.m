@@ -332,8 +332,7 @@ static void SaoqiangWCAssetsPageWalk(UIView *view, UIWindow *window, UIView *hos
     --*remaining;
     // A UIWindow need not report itself from UIView.window; validate children
     // against their host window, but always enter the already-verified root.
-    if ((view != window && view.window != window) || view.hidden || SaoqiangWCAssetsIsOwnView(view) ||
-        (view != window && !SaoqiangWCAssetsPageCurrentBranch(view))) return;
+    if ((view != window && view.window != window) || view.hidden || SaoqiangWCAssetsIsOwnView(view)) return;
     CGRect bounds = view.bounds;
     if (!SaoqiangWCAssetsPageRectValid(bounds)) return;
     CALayer *layer = view.layer;
@@ -353,6 +352,10 @@ static void SaoqiangWCAssetsPageWalk(UIView *view, UIWindow *window, UIView *hos
     UIResponder *responder = view.nextResponder;
     if ([responder isKindOfClass:UIViewController.class] &&
         ((UIViewController *)responder).viewIfLoaded == view) {
+        // 0.11.44: only a controller's own root view can belong to a stale stack
+        // branch — every deeper node was reached through it. Testing the branch
+        // on each of the ~1600 nodes was redundant responder-chain walking.
+        if (view != window && !SaoqiangWCAssetsPageCurrentBranch(view)) return;
         outsideController = NO;
         // Keep ancestor containers only to reach the host and their visible bars.
         // This also excludes attached presenting pages behind a modal host.
