@@ -299,9 +299,19 @@ static BOOL SaoqiangWCAssetsPageLayerOffer(UIView *view, SaoqiangWCAssetsStore *
         objc_setAssociatedObject(view, &SaoqiangWCAssetsLayerIconKey, cached, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     // The snapshot image itself can never carry a name; borrow one from the exact
-    // CGImage the hooks saw loaded, or from the control that is drawing it.
+    // CGImage the hooks saw loaded, from a UIImage the control still holds (its
+    // private asset name survives even when the view's rendering is layer-drawn),
+    // or from the control that is drawing it.
     NSString *source = @"可见图层图标";
-    NSString *resolved = SaoqiangWCAssetsPageResolvedName(view, cg, &source);
+    NSString *resolved = nil;
+    UIImage *owner = nil;
+    if ([view isKindOfClass:UIImageView.class]) owner = ((UIImageView *)view).image;
+    else if ([view isKindOfClass:UIButton.class]) owner = ((UIButton *)view).currentImage;
+    if (owner) {
+        NSString *recovered = SaoqiangWCAssetsRecoveredImageName(owner);
+        if (recovered.length) { resolved = recovered; source = @"可见图层图标 · 名称从控件图片恢复"; }
+    }
+    if (!resolved.length) resolved = SaoqiangWCAssetsPageResolvedName(view, cg, &source);
     SaoqiangWCAssetsAssociateVisibleIcon(cached, resolved ? [source stringByAppendingString:@"（未取得原始资源名）"] : @"可见图层图标 · 未取得原始名称", resolved);
     return SaoqiangWCAssetsPageOffer(cached, view, store);
 }

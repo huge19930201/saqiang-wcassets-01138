@@ -228,6 +228,19 @@ static void DemoFailure(NSString *reason) {
         // container to the bar itself, so demand a real gap, not just "below".
         if (titleTop < barBottom + 8)
             DemoFailure([NSString stringWithFormat:@"card title sits under the navigation bar: title y=%.1f bar bottom=%.1f",titleTop,barBottom]);
+        // 0.11.42 device condition: older iOS reports a zero/partial safe area
+        // here, which is what used to slide the title under the bar. Force the
+        // same state (the old "safe area" constant) and prove the required gap
+        // to the bar itself still wins.
+        UIViewController *panel=nav.viewControllers.firstObject;
+        NSLayoutConstraint *safeTop=[panel valueForKey:@"SaoqiangWCAssetsPagesTop"];
+        if (!safeTop) DemoFailure(@"card: pages top constraint missing");
+        safeTop.constant=0;
+        [me.window layoutIfNeeded];
+        UILabel *title2=DemoFindLabel(nav.view,@"抓取图标名称");
+        CGFloat titleTop2=title2?[title2 convertPoint:CGPointZero toView:nav.view].y:-1;
+        if (titleTop2 < barBottom+8)
+            DemoFailure([NSString stringWithFormat:@"bar gap lost with zero safe area: title y=%.1f bar bottom=%.1f",titleTop2,barBottom]);
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
         [presented performSelector:NSSelectorFromString(@"SaoqiangWCAssetsExpandForTesting")];
