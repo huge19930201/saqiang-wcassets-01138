@@ -308,8 +308,16 @@ static BOOL SaoqiangWCAssetsPageLayerOffer(UIView *view, SaoqiangWCAssetsStore *
     if ([view isKindOfClass:UIImageView.class]) owner = ((UIImageView *)view).image;
     else if ([view isKindOfClass:UIButton.class]) owner = ((UIButton *)view).currentImage;
     if (owner) {
-        NSString *recovered = SaoqiangWCAssetsRecoveredImageName(owner);
-        if (recovered.length) { resolved = recovered; source = @"可见图层图标 · 名称从控件图片恢复"; }
+        // 0.11.43: the control's own image was very often loaded through
+        // -[MMThemeManager imageNamed:], so ask the memo about that bitmap too
+        // before falling back to UIKit's private name. layer.contents and the
+        // stored image are not always the same CGImage (renders/copies differ).
+        NSString *memoized = SaoqiangWCAssetsMemoizedNameForCGImage(owner.CGImage);
+        if (memoized.length) { resolved = memoized; source = @"可见图层图标 · 名称来自控件图片的加载缓存"; }
+        else {
+            NSString *recovered = SaoqiangWCAssetsRecoveredImageName(owner);
+            if (recovered.length) { resolved = recovered; source = @"可见图层图标 · 名称从控件图片恢复"; }
+        }
     }
     if (!resolved.length) resolved = SaoqiangWCAssetsPageResolvedName(view, cg, &source);
     SaoqiangWCAssetsAssociateVisibleIcon(cached, resolved ? [source stringByAppendingString:@"（未取得原始资源名）"] : @"可见图层图标 · 未取得原始名称", resolved);
