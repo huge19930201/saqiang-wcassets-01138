@@ -47,4 +47,15 @@ xcrun simctl launch "$DEVICE" com.saoqiang.wcassets.uitest home
 python3 -c 'import time,sys,pathlib; p=pathlib.Path(sys.argv[1])/"home-done.txt"; end=time.time()+15
 while time.time()<end and not p.exists(): time.sleep(0.5)
 if not p.exists(): sys.exit("返回微信首页 button check timed out")' "$CONTAINER/Documents"
+# 0.11.41: the gesture card is a different presentation path (child navigation
+# controller inside a resizable card). Assert 3/5 → 4.5/5 and that the page title
+# clears the navigation bar, then keep a screenshot for the record.
+xcrun simctl terminate "$DEVICE" com.saoqiang.wcassets.uitest
+rm -f "$CONTAINER/Documents/card-done.txt" "$CONTAINER/Documents/capture-failed.txt"
+xcrun simctl launch "$DEVICE" com.saoqiang.wcassets.uitest card
+python3 -c 'import time,sys,pathlib; d=pathlib.Path(sys.argv[1]); end=time.time()+20
+while time.time()<end and not (d/"card-done.txt").exists() and not (d/"capture-failed.txt").exists(): time.sleep(0.5)
+if (d/"capture-failed.txt").exists(): sys.exit("card layout check failed: "+(d/"capture-failed.txt").read_text())
+if not (d/"card-done.txt").exists(): sys.exit("card layout check timed out")' "$CONTAINER/Documents"
+xcrun simctl io "$DEVICE" screenshot build/ui-check/card.png
 xcrun simctl spawn "$DEVICE" log show --last 2m --predicate 'process == "SaoqiangUI"' --style compact > build/ui-check/runtime.log

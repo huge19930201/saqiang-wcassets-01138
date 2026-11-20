@@ -667,6 +667,12 @@ static const CGFloat SaoqiangWCAssetsSheetGrabberHeight = 18;
     [UIView animateWithDuration:0.34 delay:0 usingSpringWithDamping:0.9 initialSpringVelocity:0.12
                         options:UIViewAnimationOptionCurveEaseOut animations:^{ [self.view layoutIfNeeded]; } completion:nil];
 }
+#ifdef SAOQIANG_WCASSETS_TESTING
+- (void)SaoqiangWCAssetsExpandForTesting {
+    [self SaoqiangWCAssetsSetExpanded:YES animated:NO];
+    [self.view layoutIfNeeded];
+}
+#endif
 
 // Only vertical drags are ours; anything that lands in a scroll view keeps
 // scrolling. The header strip (grabber + navigation bar) always resizes.
@@ -2358,6 +2364,13 @@ static void SaoqiangWCAssetsPresentPanelAtPage(UIViewController *presenter, NSIn
 void SaoqiangWCAssetsPresentPanel(UIViewController *presenter) {
     SaoqiangWCAssetsPresentPanelAtPage(presenter, 0, NO);
 }
+#ifdef SAOQIANG_WCASSETS_TESTING
+// Test-only: open the gesture card exactly like the two/three-finger shortcut,
+// so the simulator smoke check can assert the 3/5 sheet layout without WeChat.
+void SaoqiangWCAssetsPresentPanelForTesting(UIViewController *presenter, NSInteger page, BOOL sheet) {
+    SaoqiangWCAssetsPresentPanelAtPage(presenter, page, sheet);
+}
+#endif
 static void SaoqiangWCAssetsPresentIconPage(void) {
     SaoqiangWCAssetsPresentPanelAtPage(nil, 1, YES);
 }

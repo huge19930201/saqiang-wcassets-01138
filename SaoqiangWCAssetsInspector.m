@@ -5,6 +5,7 @@
 #import <objc/runtime.h>
 #import <os/lock.h>
 #import <string.h>
+#import <ctype.h>
 static char SaoqiangWCAssetsImageInfoKey, SaoqiangWCAssetsOwnViewKey, SaoqiangWCAssetsBubbleCandidateKey;
 @interface SaoqiangWCAssetsSVGBytes : NSObject
 @property(nonatomic, copy) NSData *data;
@@ -361,6 +362,25 @@ static NSArray<NSString *> *SaoqiangWCAssetsNameIvars(Class cls) {
     }
     return result;
 }
+static BOOL SaoqiangWCAssetsHexOnly(const char *text, size_t length) {
+    if (!length) return NO;
+    for (size_t i = 0; i < length; ++i)
+        if (!isxdigit((unsigned char)text[i])) return NO;
+    return YES;
+}
+// UIImage/imageAsset sometimes expose a generated identifier (UUID or a plain
+// hex digest) instead of a resource name. Those must never become a row name.
+static BOOL SaoqiangWCAssetsIdentifierLike(NSString *value) {
+    const char *utf8 = value.UTF8String; if (!utf8) return NO;
+    size_t length = strlen(utf8);
+    if (!length) return NO;
+    if (length == 36 && utf8[8] == '-' && utf8[13] == '-' && utf8[18] == '-' && utf8[23] == '-') {
+        char hex[36]; size_t written = 0;
+        for (size_t i = 0; i < length; ++i) if (i != 8 && i != 13 && i != 18 && i != 23) hex[written++] = utf8[i];
+        return SaoqiangWCAssetsHexOnly(hex, written);
+    }
+    return (length == 32 || length == 40 || length == 64) && SaoqiangWCAssetsHexOnly(utf8, length);
+}
 static NSString *SaoqiangWCAssetsAcceptableRecoveredName(NSString *value) {
     if (![value isKindOfClass:NSString.class] || !value.length || value.length > 240) return nil;
     if ([value rangeOfCharacterFromSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].location != NSNotFound) return nil;
@@ -368,6 +388,7 @@ static NSString *SaoqiangWCAssetsAcceptableRecoveredName(NSString *value) {
     for (NSString *junk in @[@"(null)", @"null", @"nil", @"UIImage", @"image", @"NSNull"]) {
         if ([value isEqualToString:junk]) return nil;
     }
+    if (SaoqiangWCAssetsIdentifierLike(value)) return nil;
     return SaoqiangWCAssetsSafeRendererName(value) ? value : nil;
 }
 static NSString *SaoqiangWCAssetsReadNameIvar(id object) {

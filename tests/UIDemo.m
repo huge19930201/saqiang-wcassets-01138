@@ -27,6 +27,13 @@ static UIImage *DemoBubble(UIColor *color,CGSize size) {
     UIGraphicsImageRenderer *r=[[UIGraphicsImageRenderer alloc] initWithSize:size];
     return [r imageWithActions:^(UIGraphicsImageRendererContext *context) { [color setFill]; [[UIBezierPath bezierPathWithRoundedRect:CGRectInset((CGRect){CGPointZero,size},1,1) cornerRadius:6] fill]; }];
 }
+static UILabel *DemoFindLabel(UIView *view, NSString *text) {
+    if ([view isKindOfClass:UILabel.class] && [((UILabel *)view).text isEqualToString:text]) return (UILabel *)view;
+    for (UIView *child in view.subviews) { UILabel *found=DemoFindLabel(child,text); if (found) return found; }
+    return nil;
+}
+// Test-only entry point into the gesture card (see SaoqiangWCAssetsUI.m).
+extern void SaoqiangWCAssetsPresentPanelForTesting(UIViewController *, NSInteger, BOOL);
 static void DemoFailure(NSString *reason) {
     NSLog(@"CAPTURE_TEST_FAILED %@",reason);
     NSURL *d=[NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject;
@@ -104,7 +111,8 @@ static void DemoFailure(NSString *reason) {
         [store SaoqiangWCAssetsAfterPending:^{ [self verifyAndPresent]; }];
     };
     NSArray *args = NSProcessInfo.processInfo.arguments;
-    BOOL quickUI = [args containsObject:@"tools"] || [args containsObject:@"icons"] || [args containsObject:@"home"];
+    BOOL quickUI = [args containsObject:@"tools"] || [args containsObject:@"icons"] ||
+        [args containsObject:@"home"] || [args containsObject:@"card"];
     if (quickUI) resumeCapture();
     else SaoqiangWCAssetsRunEngine308Checks(^{ SaoqiangWCAssetsRunFeatureChecks(self.window,resumeCapture); });
 }
@@ -192,12 +200,51 @@ static void DemoFailure(NSString *reason) {
         }];
     }];
 }
+- (void)presentCardForLayoutCheck {
+    SaoqiangWCAssetsSetIconCapturing(NO);
+    SaoqiangWCAssetsPresentPanelForTesting(self.host, 1, YES);
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(1.2*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
+        SaoqiangWCAssetsDemoDelegate *me=weakSelf; if (!me) return;
+        NSURL *docs=[NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject;
+        UIViewController *presented=me.host.presentedViewController;
+        if (!presented) DemoFailure(@"card panel did not present");
+        UIView *card=nil; UINavigationController *nav=nil;
+        @try { card=[presented valueForKey:@"SaoqiangWCAssetsCard"]; nav=[presented valueForKey:@"SaoqiangWCAssetsNav"]; }
+        @catch (__unused NSException *e) {}
+        if (![card isKindOfClass:UIView.class] || ![nav isKindOfClass:UINavigationController.class])
+            DemoFailure(@"card host missing card or navigation controller");
+        CGFloat windowHeight=MAX(1,CGRectGetHeight(me.window.bounds));
+        CGFloat collapsed=CGRectGetHeight(card.bounds)/windowHeight;
+        // 0.11.40 spec: 3/5 collapsed, 4.5/5 expanded, top strip of WeChat visible.
+        if (collapsed<0.55 || collapsed>0.65)
+            DemoFailure([NSString stringWithFormat:@"card collapsed height %.3f is not 3/5",collapsed]);
+        UILabel *title=DemoFindLabel(nav.view,@"抓取图标名称");
+        if (!title) DemoFailure(@"card: 抓取图标名称 title missing");
+        CGFloat titleTop=[title convertPoint:CGPointZero toView:nav.view].y;
+        CGFloat barBottom=CGRectGetMaxY([nav.navigationBar convertRect:nav.navigationBar.bounds toView:nav.view]);
+        // The 0.11.41 regression: content pinned to a zero safe area slid under
+        // the bar and the title was cut in half.
+        if (titleTop < barBottom-0.5)
+            DemoFailure([NSString stringWithFormat:@"card title sits under the navigation bar: title y=%.1f bar bottom=%.1f",titleTop,barBottom]);
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+        [presented performSelector:NSSelectorFromString(@"SaoqiangWCAssetsExpandForTesting")];
+#pragma clang diagnostic pop
+        [me.window layoutIfNeeded];
+        CGFloat expanded=CGRectGetHeight(card.bounds)/windowHeight;
+        if (expanded<0.85 || expanded>0.95)
+            DemoFailure([NSString stringWithFormat:@"card expanded height %.3f is not 4.5/5",expanded]);
+        [@"done" writeToURL:[docs URLByAppendingPathComponent:@"card-done.txt"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    });
+}
 - (void)exportAndShow:(NSArray *)records {
     // Screenshots must show the launch default: 开始抓取 black, not green.
     SaoqiangWCAssetsSetIconCapturing(NO);
     SaoqiangWCAssetsStore *store=[SaoqiangWCAssetsStore SaoqiangWCAssetsShared];
     NSArray *exportArgs = NSProcessInfo.processInfo.arguments;
-    if (![exportArgs containsObject:@"tools"] && ![exportArgs containsObject:@"icons"] && ![exportArgs containsObject:@"home"]) {
+    if (![exportArgs containsObject:@"tools"] && ![exportArgs containsObject:@"icons"] &&
+        ![exportArgs containsObject:@"home"] && ![exportArgs containsObject:@"card"]) {
         NSURL *documents=[NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject;
         [store SaoqiangWCAssetsExportFolder:records completion:^(NSURL *folder,NSString *failure) {
             if (!folder) DemoFailure(failure);
@@ -220,9 +267,10 @@ static void DemoFailure(NSString *reason) {
             }];
         }];
     }
+    NSArray *pageArgs = NSProcessInfo.processInfo.arguments;
+    if ([pageArgs containsObject:@"card"]) { [self presentCardForLayoutCheck]; return; }
     UIViewController *panel=[NSClassFromString(@"SaoqiangWCAssetsController") new];
     panel.modalPresentationStyle=UIModalPresentationFullScreen;
-    NSArray *pageArgs = NSProcessInfo.processInfo.arguments;
     [self.host presentViewController:panel animated:NO completion:^{
         if ([pageArgs containsObject:@"tools"]) { UIButton *tab=[panel valueForKey:@"SaoqiangWCAssetsThemeTabButton"]; [tab sendActionsForControlEvents:UIControlEventTouchUpInside]; }
         else if ([pageArgs containsObject:@"icons"]) { UIButton *entry=[panel valueForKey:@"SaoqiangWCAssetsIconEntry"]; [entry sendActionsForControlEvents:UIControlEventTouchUpInside]; }
