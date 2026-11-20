@@ -137,32 +137,51 @@ static NSString *SaoqiangWCAssetsPageKey(UIViewController *controller) {
     return key;
 }
 
+static BOOL SaoqiangWCAssetsPageExcludedAncestors(UIView *view) {
+    static const char *const badAncestors[] = {
+        "headimage","avatar","portrait","sticker","emoticon","messagecell",
+        "photocell","videocell","webimage","albumcell","assetcell","photopicker",
+        "moment","camera",NULL
+    };
+    NSUInteger ancestry = 0;
+    for (UIView *a = view; a && ancestry++ < 12; a = a.superview)
+        if (SQNameClassExcluded(class_getName(object_getClass(a)), badAncestors)) return YES;
+    return NO;
+}
+// An unnamed small image only counts as an icon when it still lives in an
+// icon-shaped container: a control, a bar, or a list cell. A free-floating
+// unnamed image on a plain page is a photo/illustration and must not enter the
+// list — the capture smoke test pins that down with a loose chat photo.
+static BOOL SaoqiangWCAssetsPageIconContainer(UIView *view) {
+    static const char *const containerParts[] = { "cell","bar","button","item","icon",NULL };
+    NSUInteger ancestry = 0;
+    for (UIView *a = view; a && ancestry++ < 12; a = a.superview) {
+        if ([a isKindOfClass:UIControl.class] || [a isKindOfClass:UITableViewCell.class] ||
+            [a isKindOfClass:UICollectionReusableView.class] ||
+            [a isKindOfClass:UINavigationBar.class] || [a isKindOfClass:UITabBar.class] ||
+            [a isKindOfClass:UIToolbar.class]) return YES;
+        if (SQNameClassExcluded(class_getName(object_getClass(a)), containerParts)) return YES;
+    }
+    return NO;
+}
 static BOOL SaoqiangWCAssetsPageOffer(UIImage *image, UIView *view, SaoqiangWCAssetsStore *store) {
     if (![image isKindOfClass:UIImage.class] || SaoqiangWCAssetsIsOwnImage(image)) return NO;
     SaoqiangWCAssetsImageInfo *info = SaoqiangWCAssetsImageInfoForImage(image);
     if (!info) {
-        BOOL buttonIcon = NO, excluded = NO;
-        NSUInteger ancestry = 0;
-        static const char *const badAncestors[] = {
-            "headimage","avatar","portrait","sticker","emoticon","messagecell",
-            "photocell","videocell","webimage","albumcell","assetcell","photopicker",
-            "moment","camera",NULL
-        };
-        for (UIView *a = view; a && ancestry++ < 12; a = a.superview) {
-            if ([a isKindOfClass:UIButton.class]) buttonIcon = YES;
-            if (SQNameClassExcluded(class_getName(object_getClass(a)), badAncestors)) excluded = YES;
-        }
+        BOOL buttonIcon = NO;
+        for (UIView *a = view; a; a = a.superview) if ([a isKindOfClass:UIButton.class]) { buttonIcon = YES; break; }
         CGFloat width = image.size.width, height = image.size.height;
         BOOL small = width > 0 && height > 0 && width <= 72 && height <= 72 && width*image.scale <= 288 && height*image.scale <= 288;
         // 0.11.40 and earlier required a UIButton ancestor here, so every icon
         // drawn by a plain UIImageView (settings rows, custom cells, tab strips)
-        // was silently skipped — the「好多图标抓不到」report. Any small, square-ish
-        // image outside the photo/avatar block list is an icon; round corners
-        // are what keeps avatars out without their class names.
+        // was silently skipped — the「好多图标抓不到」report. Small unnamed images
+        // inside a control/bar/cell count as icons; round corners and the
+        // photo/avatar block list keep avatars out.
         CALayer *layer = view.layer;
         CGFloat shortest = MIN(view.bounds.size.width, view.bounds.size.height);
         BOOL round = shortest > 0 && layer.cornerRadius >= shortest * 0.45;
-        if (excluded || round || !small || view.bounds.size.width > 120 || view.bounds.size.height > 120) return NO;
+        if (round || !small || view.bounds.size.width > 120 || view.bounds.size.height > 120 ||
+            SaoqiangWCAssetsPageExcludedAncestors(view) || !SaoqiangWCAssetsPageIconContainer(view)) return NO;
         SaoqiangWCAssetsAssociateVisibleIcon(image, buttonIcon ? @"可见按钮图标 · 未取得原始名称" : @"可见图标 · 未取得原始名称");
         info = SaoqiangWCAssetsImageInfoForImage(image);
         if (!info) return NO;
@@ -176,17 +195,6 @@ static BOOL SaoqiangWCAssetsPageOffer(UIImage *image, UIView *view, SaoqiangWCAs
     ++SaoqiangWCAssetsPageOffers;
     [store SaoqiangWCAssetsEnqueueVisibleImage:image displaySize:size];
     return YES;
-}
-static BOOL SaoqiangWCAssetsPageExcludedAncestors(UIView *view) {
-    static const char *const badAncestors[] = {
-        "headimage","avatar","portrait","sticker","emoticon","messagecell",
-        "photocell","videocell","webimage","albumcell","assetcell","photopicker",
-        "moment","camera",NULL
-    };
-    NSUInteger ancestry = 0;
-    for (UIView *a = view; a && ancestry++ < 12; a = a.superview)
-        if (SQNameClassExcluded(class_getName(object_getClass(a)), badAncestors)) return YES;
-    return NO;
 }
 // Some WeChat icons never become a UIImage: they are drawn straight into the
 // layer (glyph / SVG render / asset-backed content). 0.11.40 only accepted a
@@ -206,7 +214,7 @@ static BOOL SaoqiangWCAssetsPageLayerOffer(UIView *view, SaoqiangWCAssetsStore *
     if (!SaoqiangWCAssetsPageRectValid(view.bounds) || bounds.width > 160 || bounds.height > 160) return NO;
     CGFloat shortest = MIN(bounds.width, bounds.height);
     if (shortest > 0 && layer.cornerRadius >= shortest * 0.45) return NO;
-    if (SaoqiangWCAssetsPageExcludedAncestors(view)) return NO;
+    if (SaoqiangWCAssetsPageExcludedAncestors(view) || !SaoqiangWCAssetsPageIconContainer(view)) return NO;
     UIImage *cached = objc_getAssociatedObject(view, &SaoqiangWCAssetsLayerIconKey);
     if (![cached isKindOfClass:UIImage.class] || cached.CGImage != cg) {
         CGFloat scale = layer.contentsScale > 0 ? layer.contentsScale : UIScreen.mainScreen.scale;
