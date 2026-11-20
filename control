@@ -1,6 +1,6 @@
 Package: com.saoqiang.wcassets
 Name: 小扒手
-Version: 0.11.41
+Version: 0.11.42
 Architecture: iphoneos-arm64
 Description: 小扒手 · 微信主题素材与图标抓取面板（主题抓取改用 0.11.28 被动抓取方式）
 Maintainer: Saoqiang

@@ -424,7 +424,7 @@ NSString * _Nullable SaoqiangWCAssetsRecoveredImageName(UIImage * _Nullable imag
     }
     return found;
 }
-void SaoqiangWCAssetsAssociateVisibleIcon(UIImage *image, NSString *source) {
+void SaoqiangWCAssetsAssociateVisibleIcon(UIImage *image, NSString *source, NSString *name) {
     if (![image isKindOfClass:UIImage.class] || SaoqiangWCAssetsIsSuppressed() || SaoqiangWCAssetsIsOwnImage(image)) return;
     @synchronized(SaoqiangWCAssetsAssociationLock()) {
         if (SaoqiangWCAssetsImageInfoForImage(image)) return;
@@ -435,6 +435,13 @@ void SaoqiangWCAssetsAssociateVisibleIcon(UIImage *image, NSString *source) {
         if (recovered.length) {
             info.SaoqiangWCAssetsName=recovered;
             info.SaoqiangWCAssetsSource=@"UIImage imageNamed: · 名称从已缓存图片恢复";
+            info.SaoqiangWCAssetsSnapshotOnly=YES;
+        } else if (name.length) {
+            // 0.11.42: the caller matched this snapshot to a named load or read
+            // the owning control's label. Better a real, checkable name than the
+            // same「无原始资源名」on every row.
+            info.SaoqiangWCAssetsName=name;
+            info.SaoqiangWCAssetsSource=source;
             info.SaoqiangWCAssetsSnapshotOnly=YES;
         } else {
             info.SaoqiangWCAssetsName=@"无原始资源名"; info.SaoqiangWCAssetsSource=source;

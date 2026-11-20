@@ -15,7 +15,7 @@ for item in m['items']:
   assert data.startswith(b'\x89PNG\r\n\x1a\n');png+=1
   if p in expected:
    assert item['original'] and not item['snapshot'] and item['originalNameAvailable'] and item['bubble'];original_bubbles+=1
-  else: assert item['snapshot'] and not item['original'] and not item['originalNameAvailable'], 'unexpected png snapshot: %r (svg=%d png=%d bubbles=%d)' % (item, svg, png, bubbles)
+  else: assert item['snapshot'] and not item['original'], 'unexpected png snapshot: %r (svg=%d png=%d bubbles=%d)' % (item, svg, png, bubbles)
   if item['bubble']:
    bubbles+=1;w,h=struct.unpack('>II',data[16:24]);assert 0<w<=160 and 0<h<=100
 assert svg==7 and png==5 and bubbles==4 and original_bubbles==3,(svg,png,bubbles,original_bubbles)

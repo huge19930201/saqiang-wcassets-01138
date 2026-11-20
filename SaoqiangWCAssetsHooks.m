@@ -9,6 +9,63 @@ static _Thread_local unsigned SaoqiangWCAssetsHookDepth;
 static NSMutableArray<NSDictionary *> *SaoqiangWCAssetsDiagnostics;
 static NSMutableSet<NSString *> *SaoqiangWCAssetsInstalled;
 static char SaoqiangWCAssetsSVGObjectInfoKey;
+// ===== 0.11.42：CGImage → 资源名 备忘 =====
+// Two kinds of icon reach the list without a name, and both used to end up as
+// 「无原始资源名」:
+//   1. icons decoded long before 开始抓取 was tapped (no hooked load any more);
+//   2. icons WeChat draws straight into layer.contents, so the sampler only has
+//      a raw CGImage and never a UIImage with metadata.
+// Record the CGImage each named load produced, even while the capture session is
+// off, and let an exact pointer match name a later snapshot. The CGImage is
+// retained so its address stays unique; a count/byte budget bounds that memory.
+@interface SaoqiangWCAssetsCGMemoEntry : NSObject
+@property(nonatomic) CGImageRef cg;
+@property(nonatomic, copy) NSString *name;
+@end
+@implementation SaoqiangWCAssetsCGMemoEntry
+- (void)dealloc { if (_cg) CGImageRelease(_cg); }
+@end
+static NSMutableArray<SaoqiangWCAssetsCGMemoEntry *> *SaoqiangWCAssetsCGMemo;
+static size_t SaoqiangWCAssetsCGMemoBytes;
+static const NSUInteger SaoqiangWCAssetsCGMemoCount = 160;
+static const size_t SaoqiangWCAssetsCGMemoBudget = 8u * 1024u * 1024u;
+static NSObject *SaoqiangWCAssetsCGMemoLock(void) {
+    static NSObject *lock; static dispatch_once_t once;
+    dispatch_once(&once, ^{ lock = [NSObject new]; });
+    return lock;
+}
+static void SaoqiangWCAssetsRememberCGName(UIImage *image, NSString *name) {
+    if (![image isKindOfClass:UIImage.class] || !SaoqiangWCAssetsSafeRendererName(name)) return;
+    CGImageRef cg = image.CGImage; if (!cg) return;
+    size_t width = CGImageGetWidth(cg), height = CGImageGetHeight(cg);
+    // Only the small icons this panel cares about; a big image is never a toolbar icon.
+    if (!width || !height || width > 256 || height > 256) return;
+    size_t bytes = width * height * 4;
+    @synchronized (SaoqiangWCAssetsCGMemoLock()) {
+        if (!SaoqiangWCAssetsCGMemo) SaoqiangWCAssetsCGMemo = [NSMutableArray new];
+        for (SaoqiangWCAssetsCGMemoEntry *entry in SaoqiangWCAssetsCGMemo)
+            if (entry.cg == cg) { if (![entry.name isEqual:name]) entry.name = name; return; }
+        while (SaoqiangWCAssetsCGMemo.count && (SaoqiangWCAssetsCGMemo.count >= SaoqiangWCAssetsCGMemoCount ||
+               SaoqiangWCAssetsCGMemoBytes + bytes > SaoqiangWCAssetsCGMemoBudget)) {
+            SaoqiangWCAssetsCGMemoEntry *old = SaoqiangWCAssetsCGMemo.firstObject;
+            size_t oldBytes = old.cg ? CGImageGetWidth(old.cg) * CGImageGetHeight(old.cg) * 4 : 0;
+            SaoqiangWCAssetsCGMemoBytes -= MIN(SaoqiangWCAssetsCGMemoBytes, oldBytes);
+            [SaoqiangWCAssetsCGMemo removeObjectAtIndex:0];
+        }
+        SaoqiangWCAssetsCGMemoEntry *entry = [SaoqiangWCAssetsCGMemoEntry new];
+        entry.cg = CGImageRetain(cg); entry.name = name;
+        [SaoqiangWCAssetsCGMemo addObject:entry];
+        SaoqiangWCAssetsCGMemoBytes += bytes;
+    }
+}
+NSString * _Nullable SaoqiangWCAssetsMemoizedNameForCGImage(CGImageRef cg) {
+    if (!cg) return nil;
+    @synchronized (SaoqiangWCAssetsCGMemoLock()) {
+        for (SaoqiangWCAssetsCGMemoEntry *entry in SaoqiangWCAssetsCGMemo)
+            if (entry.cg == cg) return entry.name;
+    }
+    return nil;
+}
 @interface SaoqiangWCAssetsSVGScope : NSObject
 @property(nonatomic, copy) NSString *name;
 @property(nonatomic, strong) NSData *raw;
@@ -122,6 +179,7 @@ static SaoqiangWCAssetsSVGScope *SaoqiangWCAssetsOpenSVGScope(NSString *name) {
 }
 static void SaoqiangWCAssetsCapture(id image, id name, NSString *source, NSString *path, BOOL svg) {
     if (!SaoqiangWCAssetsCanCapture() || ![image isKindOfClass:UIImage.class] || !SaoqiangWCAssetsUIName(name)) return;
+    SaoqiangWCAssetsRememberCGName(image, name);
     SaoqiangWCAssetsAssociateNamedImage(image, name, source, path ?: SaoqiangWCAssetsObservedFilePath(image), svg);
 
 }
@@ -133,7 +191,15 @@ static UIImage *(*SaoqiangWCAssetsOriginalFile)(id, SEL, NSString *);
 // nothing throws. Unwinding still runs the cleanup, so the depth stays correct.
 static void SaoqiangWCAssetsDepthRelease(unsigned **slot) { if (slot && *slot && **slot) --**slot; }
 static UIImage *SaoqiangWCAssetsNamed(id receiver, SEL cmd, NSString *name) {
-    if (!SaoqiangWCAssetsMasterEnabled() || !SaoqiangWCAssetsIconCaptureActive()) return SaoqiangWCAssetsOriginalNamed(receiver, cmd, name);
+    if (!SaoqiangWCAssetsMasterEnabled()) return SaoqiangWCAssetsOriginalNamed(receiver, cmd, name);
+    if (!SaoqiangWCAssetsIconCaptureActive()) {
+        // Capture off: still memoise the CGImage→name pair. The icons the user
+        // opens the panel for are usually loaded now and sampled later, so this
+        // is the only chance to learn their names.
+        UIImage *image = SaoqiangWCAssetsOriginalNamed(receiver, cmd, name);
+        SaoqiangWCAssetsRememberCGName(image, name);
+        return image;
+    }
     UIImage *image;
     {
         ++SaoqiangWCAssetsHookDepth;
@@ -146,9 +212,14 @@ static UIImage *SaoqiangWCAssetsNamed(id receiver, SEL cmd, NSString *name) {
     if (!SaoqiangWCAssetsHookDepth) SaoqiangWCAssetsCapture(image, name, @"运行时 UIImage imageNamed:", nil, NO); return image;
 }
 static UIImage *SaoqiangWCAssetsBundle(id receiver, SEL cmd, NSString *name, NSBundle *bundle, UITraitCollection *traits) {
-    if (!SaoqiangWCAssetsMasterEnabled() || !SaoqiangWCAssetsIconCaptureActive()) return SaoqiangWCAssetsOriginalBundle(receiver, cmd, name, bundle, traits);
-    UIImage *image;
+    if (!SaoqiangWCAssetsMasterEnabled()) return SaoqiangWCAssetsOriginalBundle(receiver, cmd, name, bundle, traits);
     BOOL mainBundle = !bundle || [bundle.bundlePath.stringByStandardizingPath isEqual:NSBundle.mainBundle.bundlePath.stringByStandardizingPath];
+    if (!SaoqiangWCAssetsIconCaptureActive()) {
+        UIImage *image = SaoqiangWCAssetsOriginalBundle(receiver, cmd, name, bundle, traits);
+        if (mainBundle) SaoqiangWCAssetsRememberCGName(image, name);
+        return image;
+    }
+    UIImage *image;
     {
         ++SaoqiangWCAssetsHookDepth;
         unsigned *__attribute__((cleanup(SaoqiangWCAssetsDepthRelease))) release = &SaoqiangWCAssetsHookDepth;
@@ -161,7 +232,12 @@ static UIImage *SaoqiangWCAssetsBundle(id receiver, SEL cmd, NSString *name, NSB
     return image;
 }
 static UIImage *SaoqiangWCAssetsFile(id receiver, SEL cmd, NSString *path) {
-    if (!SaoqiangWCAssetsMasterEnabled() || !SaoqiangWCAssetsIconCaptureActive()) return SaoqiangWCAssetsOriginalFile(receiver, cmd, path);
+    if (!SaoqiangWCAssetsMasterEnabled()) return SaoqiangWCAssetsOriginalFile(receiver, cmd, path);
+    if (!SaoqiangWCAssetsIconCaptureActive()) {
+        UIImage *image = SaoqiangWCAssetsOriginalFile(receiver, cmd, path);
+        SaoqiangWCAssetsRememberCGName(image, path.lastPathComponent);
+        return image;
+    }
     UIImage *image;
     {
         ++SaoqiangWCAssetsHookDepth;

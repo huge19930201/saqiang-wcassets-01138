@@ -164,6 +164,80 @@ static BOOL SaoqiangWCAssetsPageIconContainer(UIView *view) {
     }
     return NO;
 }
+// ===== 0.11.42：没有元数据的图标怎么取名 =====
+// WeChat draws a lot of its small icons straight into layer.contents, so the
+// sampler only ever holds a raw CGImage. Two exact, cheap sources remain:
+//   1. the CGImage→name memo the image hooks fill even before 开始抓取;
+//   2. the owning control's accessibility label / button title / row caption.
+// Nothing here guesses from pixels.
+static BOOL SaoqiangWCAssetsPageNameJunk(NSString *text) {
+    static NSSet *junk; static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        junk = [NSSet setWithArray:@[@"按钮", @"图片", @"图标", @"更多", @"返回", @"关闭",
+                                     @"button", @"image", @"icon", @"more", @"back", @"close"]];
+    });
+    return !text.length || [junk containsObject:text.lowercaseString];
+}
+static NSString *SaoqiangWCAssetsPageCleanName(NSString *value, NSUInteger limit) {
+    if (![value isKindOfClass:NSString.class]) return nil;
+    NSString *trimmed = [value stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (!trimmed.length || trimmed.length > limit) return nil;
+    if ([trimmed rangeOfCharacterFromSet:NSCharacterSet.controlCharacterSet].location != NSNotFound) return nil;
+    if (SaoqiangWCAssetsPageNameJunk(trimmed)) return nil;
+    // Pure punctuation or digits identify nothing.
+    if ([trimmed rangeOfCharacterFromSet:NSCharacterSet.alphanumericCharacterSet].location == NSNotFound) return nil;
+    return trimmed;
+}
+static NSString *SaoqiangWCAssetsPageContextName(UIView *view) {
+    NSUInteger depth = 0;
+    for (UIView *a = view; a && depth++ < 10; a = a.superview) {
+        if (a == a.window) break;
+        NSString *label = SaoqiangWCAssetsPageCleanName(a.accessibilityLabel, 24);
+        if (label) return label;
+        if ([a isKindOfClass:UIButton.class]) {
+            NSString *title = SaoqiangWCAssetsPageCleanName(((UIButton *)a).currentTitle, 24);
+            if (title) return title;
+        }
+        if ([a isKindOfClass:UILabel.class]) {
+            NSString *text = SaoqiangWCAssetsPageCleanName(((UILabel *)a).text, 24);
+            if (text) return text;
+        }
+    }
+    // The icon's own row caption is usually a sibling label, right next to it.
+    // Geometry is required: a page heading that happens to live in the same
+    // superview must never become an icon name.
+    depth = 0;
+    for (UIView *a = view.superview; a && depth++ < 6; a = a.superview) {
+        if (a == a.window) break;
+        CGRect iconInParent = [view convertRect:view.bounds toView:a];
+        for (UIView *sibling in a.subviews) {
+            if (sibling == view || [sibling isDescendantOfView:view]) continue;
+            if (![sibling isKindOfClass:UILabel.class]) continue;
+            CGRect rect = sibling.frame;
+            if (fabs(CGRectGetMidY(rect) - CGRectGetMidY(iconInParent)) > MAX(4, CGRectGetHeight(iconInParent))) continue;
+            CGFloat gap = CGRectGetMinX(rect) - CGRectGetMaxX(iconInParent);
+            if (gap < -4 || gap > 64) continue;
+            NSString *text = SaoqiangWCAssetsPageCleanName(((UILabel *)sibling).text, 24);
+            if (text) return text;
+        }
+    }
+    depth = 0;
+    for (UIView *a = view; a && depth++ < 10; a = a.superview) {
+        if (a == a.window) break;
+        NSString *ident = SaoqiangWCAssetsPageCleanName(a.accessibilityIdentifier, 48);
+        if (ident && [ident rangeOfCharacterFromSet:NSCharacterSet.whitespaceCharacterSet].location == NSNotFound) return ident;
+    }
+    return nil;
+}
+// Resolves a name for an image that has no hook metadata, and tells the caller
+// where the name came from so the row stays honest about its provenance.
+static NSString *SaoqiangWCAssetsPageResolvedName(UIView *view, CGImageRef cg, NSString **source) {
+    NSString *memo = SaoqiangWCAssetsMemoizedNameForCGImage(cg);
+    if (memo.length) { if (source) *source = @" · 名称来自同名加载缓存"; return memo; }
+    NSString *context = SaoqiangWCAssetsPageContextName(view);
+    if (context.length) { if (source) *source = @" · 名称取自界面控件"; return context; }
+    return nil;
+}
 static BOOL SaoqiangWCAssetsPageOffer(UIImage *image, UIView *view, SaoqiangWCAssetsStore *store) {
     if (![image isKindOfClass:UIImage.class] || SaoqiangWCAssetsIsOwnImage(image)) return NO;
     SaoqiangWCAssetsImageInfo *info = SaoqiangWCAssetsImageInfoForImage(image);
@@ -182,7 +256,9 @@ static BOOL SaoqiangWCAssetsPageOffer(UIImage *image, UIView *view, SaoqiangWCAs
         BOOL round = shortest > 0 && layer.cornerRadius >= shortest * 0.45;
         if (round || !small || view.bounds.size.width > 120 || view.bounds.size.height > 120 ||
             SaoqiangWCAssetsPageExcludedAncestors(view) || !SaoqiangWCAssetsPageIconContainer(view)) return NO;
-        SaoqiangWCAssetsAssociateVisibleIcon(image, buttonIcon ? @"可见按钮图标 · 未取得原始名称" : @"可见图标 · 未取得原始名称");
+        NSString *source = buttonIcon ? @"可见按钮图标" : @"可见图标";
+        NSString *resolved = SaoqiangWCAssetsPageResolvedName(view, image.CGImage, &source);
+        SaoqiangWCAssetsAssociateVisibleIcon(image, resolved ? [source stringByAppendingString:@"（未取得原始资源名）"] : @"可见图标 · 未取得原始名称", resolved);
         info = SaoqiangWCAssetsImageInfoForImage(image);
         if (!info) return NO;
     }
@@ -222,7 +298,11 @@ static BOOL SaoqiangWCAssetsPageLayerOffer(UIView *view, SaoqiangWCAssetsStore *
         if (!cached) return NO;
         objc_setAssociatedObject(view, &SaoqiangWCAssetsLayerIconKey, cached, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
-    SaoqiangWCAssetsAssociateVisibleIcon(cached, @"可见图层图标 · 未取得原始名称");
+    // The snapshot image itself can never carry a name; borrow one from the exact
+    // CGImage the hooks saw loaded, or from the control that is drawing it.
+    NSString *source = @"可见图层图标";
+    NSString *resolved = SaoqiangWCAssetsPageResolvedName(view, cg, &source);
+    SaoqiangWCAssetsAssociateVisibleIcon(cached, resolved ? [source stringByAppendingString:@"（未取得原始资源名）"] : @"可见图层图标 · 未取得原始名称", resolved);
     return SaoqiangWCAssetsPageOffer(cached, view, store);
 }
 

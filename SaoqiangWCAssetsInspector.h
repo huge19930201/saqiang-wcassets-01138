@@ -47,7 +47,11 @@ FOUNDATION_EXPORT NSString * _Nullable SaoqiangWCAssetsObservedFilePath(UIImage 
 // Only call from a runtime-validated bubble background or an evidenced named owner.
 FOUNDATION_EXPORT void SaoqiangWCAssetsAssociateBubbleImage(UIImage *image, NSString * _Nullable name, NSString *source);
 // Only a proven toolbar/button icon context may request an unnamed UI snapshot.
-FOUNDATION_EXPORT void SaoqiangWCAssetsAssociateVisibleIcon(UIImage *image, NSString *source);
+FOUNDATION_EXPORT void SaoqiangWCAssetsAssociateVisibleIcon(UIImage *image, NSString *source, NSString * _Nullable name);
+// 0.11.42: exact CGImage → resource-name memo filled by the image hooks even
+// while the capture session is off. Lets a layer snapshot (WeChat draws many
+// icons straight into layer.contents) keep the name it was loaded under.
+FOUNDATION_EXPORT NSString * _Nullable SaoqiangWCAssetsMemoizedNameForCGImage(CGImageRef _Nullable cg);
 // 0.11.41: images that were decoded before the capture session started carry no
 // metadata. UIImage keeps the asset name in its own private storage; recovering
 // it lets those already-cached icons keep their real resource name instead of

@@ -796,6 +796,9 @@ static const CGFloat SaoqiangWCAssetsSheetGrabberHeight = 18;
 // bottom edge and to the real bottom inset.
 @property(nonatomic,strong) NSLayoutConstraint *SaoqiangWCAssetsPagesTop;
 @property(nonatomic,strong) NSLayoutConstraint *SaoqiangWCAssetsPagesBottom;
+// 0.11.42: required gap to the navigation bar's own bottom edge.
+@property(nonatomic,strong) UIView *SaoqiangWCAssetsPagesHost;
+@property(nonatomic,strong) NSLayoutConstraint *SaoqiangWCAssetsPagesBarGap;
 - (void)SaoqiangWCAssetsRefresh:(BOOL)reset;
 - (void)SaoqiangWCAssetsPreviewRecord:(SaoqiangWCAssetsRecord *)record;
 - (void)SaoqiangWCAssetsUpdateSelection;
@@ -1155,10 +1158,22 @@ static void SaoqiangWCAssetsInstallGlobalPress(void) {
     UIView *pagesHost = [UIView new];
     pagesHost.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:pagesHost];
-    self.SaoqiangWCAssetsPagesTop = [pagesHost.topAnchor constraintEqualToAnchor:self.view.topAnchor constant:0];
+    self.SaoqiangWCAssetsPagesHost = pagesHost;
+    // 0.11.42: stop deriving the gap from safe-area numbers. Inside the card the
+    // navigation controller is a child of a plain container, and on some iOS
+    // versions its safe-area inset arrives as 0 — or as a stray status-bar value,
+    // or only after the bar has already been laid out. The page container then
+    // started *under* the bar and the 20pt page title was cut in half.
+    // The required constraint added in -viewDidLayoutSubviews ties the container
+    // to the bar view itself, so the real gap is solved by Auto Layout no matter
+    // how the bar is hosted or when it is created. The equality below is only a
+    // low-priority preference that keeps the position deterministic.
+    self.SaoqiangWCAssetsPagesTop = [pagesHost.topAnchor constraintEqualToAnchor:self.view.topAnchor constant:6];
+    self.SaoqiangWCAssetsPagesTop.priority = UILayoutPriorityDefaultLow;
     self.SaoqiangWCAssetsPagesBottom = [pagesHost.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor constant:0];
     [NSLayoutConstraint activateConstraints:@[
         self.SaoqiangWCAssetsPagesTop, self.SaoqiangWCAssetsPagesBottom,
+        [pagesHost.topAnchor constraintGreaterThanOrEqualToAnchor:self.view.topAnchor constant:6],
         [pagesHost.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [pagesHost.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor]
     ]];
@@ -1483,11 +1498,21 @@ static void SaoqiangWCAssetsInstallGlobalPress(void) {
 // from the window on every layout pass instead.
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
-    CGFloat top = self.view.safeAreaInsets.top;
+    // 0.11.42: pin the page container to the bar's own bottom edge instead of
+    // trusting safe-area numbers. hosting the navigation controller in a child
+    // container makes those insets unreliable (zero, or a status-bar value), and
+    // recomputing them by hand left the title half-covered on device.
+    // pagesHost (inside self.view) and the bar (inside the navigation
+    // controller's view) share the navigation view as an ancestor, so Auto
+    // Layout can resolve this across the hierarchy and keep it correct even when
+    // the bar is created after the first layout pass.
     UINavigationBar *bar = self.navigationController.navigationBar;
-    if (bar && bar.window && !bar.hidden) {
-        CGRect rect = [bar convertRect:bar.bounds toView:self.view];
-        if (isfinite(rect.origin.y) && isfinite(rect.size.height)) top = MAX(top, CGRectGetMaxY(rect));
+    if (bar && !self.SaoqiangWCAssetsPagesBarGap && self.SaoqiangWCAssetsPagesHost) {
+        NSLayoutConstraint *gap = [NSLayoutConstraint constraintWithItem:self.SaoqiangWCAssetsPagesHost
+            attribute:NSLayoutAttributeTop relatedBy:NSLayoutRelationGreaterThanOrEqual
+            toItem:bar attribute:NSLayoutAttributeBottom multiplier:1 constant:10];
+        gap.active = YES;
+        self.SaoqiangWCAssetsPagesBarGap = gap;
     }
     CGFloat bottom = self.view.safeAreaInsets.bottom;
     UIWindow *window = self.view.window;
@@ -1496,11 +1521,7 @@ static void SaoqiangWCAssetsInstallGlobalPress(void) {
         CGFloat clipped = MAX(0, CGRectGetMaxY(here) - CGRectGetMaxY(window.bounds));
         bottom = MAX(bottom, window.safeAreaInsets.bottom - clipped);
     }
-    if (!isfinite(top) || top < 0) top = 0;
     if (!isfinite(bottom) || bottom < 0) bottom = 0;
-    // Two points of breathing room so a 20pt title never touches the blur edge.
-    top += 2;
-    if (fabs(self.SaoqiangWCAssetsPagesTop.constant - top) > 0.5) self.SaoqiangWCAssetsPagesTop.constant = top;
     if (fabs(self.SaoqiangWCAssetsPagesBottom.constant + bottom) > 0.5) self.SaoqiangWCAssetsPagesBottom.constant = -bottom;
 }
 - (void)SaoqiangWCAssetsBuildTools {
@@ -1538,6 +1559,10 @@ static void SaoqiangWCAssetsInstallGlobalPress(void) {
     // or presented by the global gesture inside our own UINavigationController;
     // both must keep the bar on, otherwise the panel loses its only way out.
     self.navigationController.navigationBarHidden = NO;
+    // The bar may only come into existence here (older iOS creates it lazily),
+    // so ask for a layout pass: the bar-gap constraint is installed from
+    // -viewDidLayoutSubviews and must be resolved before the first frame.
+    [self.view setNeedsLayout];
     [self SaoqiangWCAssetsInstallFallbackBackIfNeeded];
     [self SaoqiangWCAssetsInstallSheetToggleIfNeeded];
     // Take over interactive pop while this panel is visible so sub-page swipes
@@ -2325,6 +2350,20 @@ static void SaoqiangWCAssetsPresentPanelAtPage(UIViewController *presenter, NSIn
         // Full screen: no floating sheet and no empty gap above the panel.
         nav.modalPresentationStyle = UIModalPresentationFullScreen;
         nav.navigationBarHidden = NO;
+        // 0.11.42: an opaque bar. A translucent bar lets the panel content slide
+        // underneath it, and in the card host the child safe area is not reliable
+        // enough to compensate — that is exactly how the 20pt page titles ended
+        // up half-covered on device.
+        nav.navigationBar.translucent = NO;
+        if (@available(iOS 13.0, *)) {
+            UINavigationBarAppearance *appearance = [UINavigationBarAppearance new];
+            [appearance configureWithOpaqueBackground];
+            appearance.backgroundColor = SaoqiangWCAssetsCanvas();
+            appearance.shadowColor = UIColor.clearColor;
+            nav.navigationBar.standardAppearance = appearance;
+            nav.navigationBar.scrollEdgeAppearance = appearance;
+            nav.navigationBar.compactAppearance = appearance;
+        }
         nav.presentationController.delegate = controller;
         SaoqiangWCAssetsPresentedController = controller;
         SaoqiangWCAssetsMarkOwnView(nav.view);

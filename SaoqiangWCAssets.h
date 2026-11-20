@@ -32,7 +32,7 @@ FOUNDATION_EXPORT void SaoqiangWCAssetsSetThemeCaptureEnabled(BOOL enabled);
 // Opens the panel from the plugin list entry. Presenter may be nil.
 FOUNDATION_EXPORT void SaoqiangWCAssetsPresentPanel(UIViewController * _Nullable presenter);
 // Keep in sync with the Version field in `control`.
-#define SAOQIANG_WCASSETS_VERSION @"0.11.41"
+#define SAOQIANG_WCASSETS_VERSION @"0.11.42"
 FOUNDATION_EXPORT BOOL SaoqiangWCAssetsUIName(NSString * _Nullable name);
 FOUNDATION_EXPORT BOOL SaoqiangWCAssetsBubbleName(NSString * _Nullable name);
 FOUNDATION_EXPORT void SaoqiangWCAssetsDiscoverSVG(void);

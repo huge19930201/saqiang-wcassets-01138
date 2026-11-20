@@ -224,8 +224,9 @@ static void DemoFailure(NSString *reason) {
         CGFloat titleTop=[title convertPoint:CGPointZero toView:nav.view].y;
         CGFloat barBottom=CGRectGetMaxY([nav.navigationBar convertRect:nav.navigationBar.bounds toView:nav.view]);
         // The 0.11.41 regression: content pinned to a zero safe area slid under
-        // the bar and the title was cut in half.
-        if (titleTop < barBottom-0.5)
+        // the bar and the title was cut in half. 0.11.42 anchors the page
+        // container to the bar itself, so demand a real gap, not just "below".
+        if (titleTop < barBottom + 8)
             DemoFailure([NSString stringWithFormat:@"card title sits under the navigation bar: title y=%.1f bar bottom=%.1f",titleTop,barBottom]);
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
