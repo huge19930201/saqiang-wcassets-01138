@@ -57,7 +57,7 @@ jobs:
             build/WCAssetsUI.dylib \
             "build/WCAssetsUI-${VERSION}-test.zip" \
             --title "小扒手 ${VERSION}" \
-            --notes "0.11.44：性能版——按 dyld 镜像数跳过重复的全进程类扫描，列表刷新按变更版本号短路、滚动中不再重建，已有原始字节的图标不再重复 PNG 编码，卡片标题位置不变。WCAssetsUI.dylib 用 TrollFools 注入微信；WCAssetsUI-${VERSION}-test.zip 是同一次构建的 dylib + plist + README。"
+            --notes "0.11.45：总开关真正管住手势——关闭「启用插件」后，双指/三指长按不再呼出面板（检测与入口双层拦截），已呼出的卡片会自动收起；插件列表入口保留，方便回去重新开启。WCAssetsUI.dylib 用 TrollFools 注入微信；WCAssetsUI-${VERSION}-test.zip 是同一次构建的 dylib + plist + README。"
       - name: Native UI layout smoke check
         timeout-minutes: 8
         run: sh tests/ui-smoke.sh

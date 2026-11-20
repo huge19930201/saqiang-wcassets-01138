@@ -10,6 +10,9 @@
 // class is defined before the panel helpers that implement it.
 static void SaoqiangWCAssetsPresentIconPage(void);
 static void SaoqiangWCAssetsPresentThemePage(void);
+// Closes a shortcut-opened card; the implementation sits after the controller
+// because it needs the panel's close path.
+static void SaoqiangWCAssetsDismissGesturePanel(void);
 
 // Embedded 256px transparent line-art logo (assets/logo-hand-in-box.png).
 static NSString * const SaoqiangWCAssetsLogoBase64 =
@@ -325,6 +328,10 @@ void SaoqiangWCAssetsSetMasterEnabled(BOOL enabled) {
     SaoqiangWCAssetsStoreFlag(&SaoqiangWCAssetsMasterValue, SaoqiangWCAssetsMasterKey, enabled);
     if (!enabled) __atomic_store_n(&SaoqiangWCAssetsIconCapturingValue, NO, __ATOMIC_RELAXED);
     SaoqiangWCAssetsSyncCapture();
+    // Switching off also retires the shortcut: the hold stops firing (gated in
+    // -SaoqiangWCAssetsInspectTouches) and a card it already opened is closed
+    // here, so no orphan panel is left behind.
+    if (!enabled) dispatch_async(dispatch_get_main_queue(), ^{ SaoqiangWCAssetsDismissGesturePanel(); });
 }
 // The store flag mirrors the switches so existing capture/export code keeps
 // working unchanged; turning everything off stops new records without clearing
@@ -837,6 +844,14 @@ static void SaoqiangWCAssetsResetTouchTracking(void) {
     SaoqiangWCAssetsTouchFired = NO;
 }
 static void SaoqiangWCAssetsInspectTouches(UIEvent *event) {
+    // 0.11.45: the shortcut lives and dies with the master switch. With it off
+    // the hold must not only refuse to open the panel, it must not even track:
+    // this runs for every touch the user makes anywhere in WeChat, so the early
+    // return is also the cheapest possible path.
+    if (!SaoqiangWCAssetsMasterEnabled()) {
+        SaoqiangWCAssetsResetTouchTracking();
+        return;
+    }
     if (event.type != UIEventTypeTouches) return;
     NSSet<UITouch *> *touches = event.allTouches;
     if (!touches.count) return;
@@ -881,7 +896,8 @@ static void SaoqiangWCAssetsInspectTouches(UIEvent *event) {
             if (SaoqiangWCAssetsTouchCount != fingers || SaoqiangWCAssetsTouchInvalid ||
                 SaoqiangWCAssetsTouchFired) return;
             SaoqiangWCAssetsTouchFired = YES;
-            if (SaoqiangWCAssetsOwnUIActive()) return;
+            // The switch may have been turned off during the 0.55s hold.
+            if (!SaoqiangWCAssetsMasterEnabled() || SaoqiangWCAssetsOwnUIActive()) return;
             if (fingers == 3) SaoqiangWCAssetsPresentThemePage();
             else SaoqiangWCAssetsPresentIconPage();
         });
@@ -1655,7 +1671,7 @@ static void SaoqiangWCAssetsInstallGlobalPress(void) {
 - (void)SaoqiangWCAssetsMasterChanged:(SaoqiangWCAssetsToggle *)sender {
     SaoqiangWCAssetsSetMasterEnabled(sender.on);
     [self SaoqiangWCAssetsUpdateSelection];
-    [self SaoqiangWCAssetsToast:sender.on ? @"总开关已开启 · 点开始抓取即可抓取图标" : @"总开关已关闭 · 插件保持注入但不抓取"];
+    [self SaoqiangWCAssetsToast:sender.on ? @"总开关已开启 · 点开始抓取即可抓取图标 · 双指长按可呼出" : @"总开关已关闭 · 已停止抓取，双指/三指长按呼出也已停用"];
 }
 - (void)SaoqiangWCAssetsStartTapped {
     if (!SaoqiangWCAssetsMasterEnabled()) {
@@ -2465,11 +2481,34 @@ void SaoqiangWCAssetsPresentPanelForTesting(UIViewController *presenter, NSInteg
     SaoqiangWCAssetsPresentPanelAtPage(presenter, page, sheet);
 }
 #endif
+// The two/three-finger shortcut is a convenience, not a way around the master
+// switch: switching the plugin off has to take the shortcut with it. The panel
+// from the plugin list stays reachable on purpose — that entry is the only way
+// back to the switch, so gating it would lock a user out of their own settings.
 static void SaoqiangWCAssetsPresentIconPage(void) {
+    if (!SaoqiangWCAssetsMasterEnabled()) return;
     SaoqiangWCAssetsPresentPanelAtPage(nil, 1, YES);
 }
 static void SaoqiangWCAssetsPresentThemePage(void) {
+    if (!SaoqiangWCAssetsMasterEnabled()) return;
     SaoqiangWCAssetsPresentPanelAtPage(nil, 2, YES);
+}
+#ifdef SAOQIANG_WCASSETS_TESTING
+// Test-only: drive the shortcut's own entry point (not the direct present) so
+// the smoke check can prove a closed master switch blocks it.
+void SaoqiangWCAssetsPresentGesturePageForTesting(NSInteger page) {
+    if (page == 2) SaoqiangWCAssetsPresentThemePage(); else SaoqiangWCAssetsPresentIconPage();
+}
+#endif
+// Takes the shortcut's card off screen. Called when the switch is turned off
+// while a card is up: it would otherwise stay there as an orphan the user can
+// no longer re-open. The plugin-list panel is left alone for the same reason as
+// above.
+static void SaoqiangWCAssetsDismissGesturePanel(void) {
+    SaoqiangWCAssetsController *controller = (SaoqiangWCAssetsController *)SaoqiangWCAssetsPresentedController;
+    if (!controller || !controller.SaoqiangWCAssetsSheet) return;
+    if (controller.isBeingDismissed || controller.SaoqiangWCAssetsBusy || controller.presentedViewController) return;
+    [controller SaoqiangWCAssetsClose];
 }
 void SaoqiangWCAssetsInstallUI(void) {
 #if !TARGET_OS_SIMULATOR

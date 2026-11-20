@@ -34,6 +34,8 @@ static UILabel *DemoFindLabel(UIView *view, NSString *text) {
 }
 // Test-only entry point into the gesture card (see SaoqiangWCAssetsUI.m).
 extern void SaoqiangWCAssetsPresentPanelForTesting(UIViewController *, NSInteger, BOOL);
+// ...and into the shortcut itself, which is gated by the master switch.
+extern void SaoqiangWCAssetsPresentGesturePageForTesting(NSInteger);
 static void DemoFailure(NSString *reason) {
     NSLog(@"CAPTURE_TEST_FAILED %@",reason);
     NSURL *d=[NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject;
@@ -85,6 +87,12 @@ static void DemoFailure(NSString *reason) {
     if (!SaoqiangWCAssetsMasterEnabled()) DemoFailure(@"test harness master should default on");
     SaoqiangWCAssetsSetMasterEnabled(NO);
     if (SaoqiangWCAssetsMasterEnabled()) DemoFailure(@"master switch did not turn off");
+    // 0.11.45: the two/three-finger shortcut is part of the switch. With it off
+    // the shortcut's own entry point must refuse to open anything (regression:
+    // the switch was off and a two-finger hold still produced the panel).
+    SaoqiangWCAssetsPresentGesturePageForTesting(1);
+    if (self.host.presentedViewController || SaoqiangWCAssetsOwnUIActive())
+        DemoFailure(@"shortcut opened the panel while the master switch was off");
     SaoqiangWCAssetsSetMasterEnabled(YES);
     if (!SaoqiangWCAssetsMasterEnabled()) DemoFailure(@"master switch did not turn on");
     SaoqiangWCAssetsSetIconCaptureEnabled(NO);
