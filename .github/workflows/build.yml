@@ -57,8 +57,7 @@ jobs:
             build/WCAssetsUI.dylib \
             "build/WCAssetsUI-${VERSION}-test.zip" \
             --title "小扒手 ${VERSION}" \
-            --notes "手势呼出面板缺少左上角返回按钮的修复版（0.11.38）。
-WCAssetsUI.dylib 用 TrollFools 注入微信；WCAssetsUI-${VERSION}-test.zip 是同一次构建的 dylib + plist + README。"
+            --notes "手势呼出直达目标页、左上角返回按钮修复版。WCAssetsUI.dylib 用 TrollFools 注入微信；WCAssetsUI-${VERSION}-test.zip 是同一次构建的 dylib + plist + README。"
       - name: Native UI layout smoke check
         timeout-minutes: 8
         run: sh tests/ui-smoke.sh
