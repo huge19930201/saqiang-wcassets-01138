@@ -36,6 +36,11 @@ static NSObject *SaoqiangWCAssetsCGMemoLock(void) {
 }
 static void SaoqiangWCAssetsRememberCGName(UIImage *image, NSString *name) {
     if (![image isKindOfClass:UIImage.class] || !SaoqiangWCAssetsSafeRendererName(name)) return;
+    // 0.11.43: this now runs on MMThemeManager's hot path. -size/-scale are plain
+    // metadata, while -CGImage can force a decode, so reject a big image before
+    // ever asking for its bitmap (a big image is never a toolbar icon).
+    CGSize logical = image.size; CGFloat scale = image.scale > 0 ? image.scale : 1;
+    if (!(logical.width > 0) || !(logical.height > 0) || logical.width * scale > 256 || logical.height * scale > 256) return;
     CGImageRef cg = image.CGImage; if (!cg) return;
     size_t width = CGImageGetWidth(cg), height = CGImageGetHeight(cg);
     // Only the small icons this panel cares about; a big image is never a toolbar icon.
