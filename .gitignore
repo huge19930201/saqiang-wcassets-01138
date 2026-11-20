@@ -1,0 +1,7 @@
+build/
+*.dylib
+*.deb
+*.zip
+.DS_Store
+__pycache__/
+*.pyc

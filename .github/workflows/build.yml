@@ -1,0 +1,70 @@
+name: Build test package
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify ZIP export writer
+        run: |
+          mkdir -p build
+          clang -Wall -Wextra -Werror -I. tests/zip_smoke.c SaoqiangWCAssetsZIP.c -o build/zip-smoke
+          ./build/zip-smoke build/export-test.zip
+          python3 tests/verify_zip.py build/export-test.zip
+      - name: Verify streaming ZIP
+        run: |
+          clang -std=c11 -O2 -Wall -Wextra -Werror -pedantic -I. tests/zip_stream.c SaoqiangWCAssetsZIP.c -o build/zip-stream
+          python3 tests/verify_stream.py "$PWD/build/zip-stream"
+      - name: Verify synthetic engine-3.0.8 color originals
+        run: |
+          python3 -m py_compile tests/verify_engine308.py
+      - name: Compile and ad-hoc sign
+        run: |
+          sh build.sh
+          codesign --force --sign - build/WCAssetsUI.dylib
+          file build/WCAssetsUI.dylib
+          otool -L build/WCAssetsUI.dylib
+          mkdir -p build/test-package
+          cp build/WCAssetsUI.dylib WCAssetsUI.plist README.md build/test-package/
+          # Read the version from control instead of hardcoding it: the zip
+          # name drifted from the deb version and made two different builds
+          # look like the same one on the desktop.
+          VERSION=$(sed -n 's/^Version: //p' control)
+          cd build/test-package
+          zip -r "../WCAssetsUI-${VERSION}-test.zip" .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WCAssetsUI-test
+          path: |
+            build/WCAssetsUI.dylib
+            build/WCAssetsUI-*-test.zip
+      # Artifacts need a signed-in GitHub session to download. Publishing the
+      # same dylib as a release asset makes it a plain public URL that can be
+      # fetched with curl, which is how the dylib reaches the test device.
+      - name: Publish dylib release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=$(sed -n 's/^Version: //p' control)
+          TAG="v${VERSION}"
+          gh release delete "$TAG" --cleanup-tag -y >/dev/null 2>&1 || true
+          gh release create "$TAG" \
+            build/WCAssetsUI.dylib \
+            "build/WCAssetsUI-${VERSION}-test.zip" \
+            --title "小扒手 ${VERSION}" \
+            --notes "手势呼出面板缺少左上角返回按钮的修复版（0.11.38）。
+WCAssetsUI.dylib 用 TrollFools 注入微信；WCAssetsUI-${VERSION}-test.zip 是同一次构建的 dylib + plist + README。"
+      - name: Native UI layout smoke check
+        timeout-minutes: 8
+        run: sh tests/ui-smoke.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: WCAssetsUI-ui-check
+          path: build/ui-check/
+          if-no-files-found: warn
