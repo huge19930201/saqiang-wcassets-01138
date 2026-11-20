@@ -532,7 +532,206 @@ typedef NS_ENUM(NSInteger, SaoqiangWCAssetsFilterKind) {
 }
 @end
 
+#pragma mark - 手势快捷入口的底部卡片（0.11.40）
+
+// The two/three-finger shortcut used to open the panel full screen, covering
+// WeChat completely. It now opens as a bottom card covering 3/5 of the screen;
+// dragging its header up grows it to 4.5/5 (a strip of WeChat stays visible),
+// dragging back down returns it to 3/5. The plugin-hub entry still pushes the
+// panel the old way, so nothing changes for users who open it from there.
+static const CGFloat SaoqiangWCAssetsSheetCollapsedFraction = 0.6;   // 3/5 屏
+static const CGFloat SaoqiangWCAssetsSheetExpandedFraction = 0.9;    // 4.5/5 屏
+static const CGFloat SaoqiangWCAssetsSheetGrabberHeight = 18;
+
+@interface SaoqiangWCAssetsSheetHost : UIViewController <UIGestureRecognizerDelegate>
+@property(nonatomic,strong,readonly) UINavigationController *SaoqiangWCAssetsNav;
+@property(nonatomic,strong,readonly) UIView *SaoqiangWCAssetsCard;
+- (instancetype)initWithNavigation:(UINavigationController *)nav;
+- (BOOL)SaoqiangWCAssetsExpanded;
+- (void)SaoqiangWCAssetsSetExpanded:(BOOL)expanded animated:(BOOL)animated;
+@end
+
+@implementation SaoqiangWCAssetsSheetHost {
+    UIView *_SaoqiangWCAssetsDim;
+    UIView *_SaoqiangWCAssetsCard;
+    UINavigationController *_SaoqiangWCAssetsNav;
+    NSLayoutConstraint *_SaoqiangWCAssetsHeight;
+    CGFloat _SaoqiangWCAssetsStartHeight;
+    BOOL _SaoqiangWCAssetsExpanded;
+    BOOL _SaoqiangWCAssetsDragging;
+}
+
+- (instancetype)initWithNavigation:(UINavigationController *)nav {
+    self = [super initWithNibName:nil bundle:nil];
+    if (self) _SaoqiangWCAssetsNav = nav;
+    return self;
+}
+- (UINavigationController *)SaoqiangWCAssetsNav { return _SaoqiangWCAssetsNav; }
+- (UIView *)SaoqiangWCAssetsCard { return _SaoqiangWCAssetsCard; }
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.view.backgroundColor = UIColor.clearColor;
+    SaoqiangWCAssetsMarkOwnView(self.view);
+
+    UIView *dim = [UIView new];
+    _SaoqiangWCAssetsDim = dim;
+    dim.backgroundColor = [UIColor.blackColor colorWithAlphaComponent:0.18];
+    dim.translatesAutoresizingMaskIntoConstraints = NO;
+    SaoqiangWCAssetsMarkOwnView(dim);
+    [self.view addSubview:dim];
+    [dim addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(SaoqiangWCAssetsDimTapped)]];
+
+    UIView *card = [UIView new];
+    _SaoqiangWCAssetsCard = card;
+    card.backgroundColor = SaoqiangWCAssetsCanvas();
+    card.layer.cornerRadius = 22;
+    card.layer.cornerCurve = kCACornerCurveContinuous;
+    card.layer.maskedCorners = kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner;
+    card.clipsToBounds = YES;
+    card.translatesAutoresizingMaskIntoConstraints = NO;
+    SaoqiangWCAssetsMarkOwnView(card);
+    [self.view addSubview:card];
+
+    // A sheet-style grabber so the drag target is visible, the same affordance
+    // iOS uses for its own resizeable sheets.
+    UIView *grabberArea = [UIView new];
+    grabberArea.backgroundColor = UIColor.clearColor;
+    grabberArea.translatesAutoresizingMaskIntoConstraints = NO;
+    [card addSubview:grabberArea];
+    UIView *grabber = [UIView new];
+    grabber.backgroundColor = [UIColor.secondaryLabelColor colorWithAlphaComponent:0.35];
+    grabber.layer.cornerRadius = 2.5;
+    grabber.translatesAutoresizingMaskIntoConstraints = NO;
+    [grabberArea addSubview:grabber];
+
+    _SaoqiangWCAssetsHeight = [card.heightAnchor constraintEqualToConstant:0];
+    [NSLayoutConstraint activateConstraints:@[
+        [dim.topAnchor constraintEqualToAnchor:self.view.topAnchor],
+        [dim.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [dim.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [dim.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+        [card.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [card.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [card.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+        _SaoqiangWCAssetsHeight,
+        [grabberArea.topAnchor constraintEqualToAnchor:card.topAnchor],
+        [grabberArea.leadingAnchor constraintEqualToAnchor:card.leadingAnchor],
+        [grabberArea.trailingAnchor constraintEqualToAnchor:card.trailingAnchor],
+        [grabberArea.heightAnchor constraintEqualToConstant:SaoqiangWCAssetsSheetGrabberHeight],
+        [grabber.centerXAnchor constraintEqualToAnchor:grabberArea.centerXAnchor],
+        [grabber.centerYAnchor constraintEqualToAnchor:grabberArea.centerYAnchor],
+        [grabber.widthAnchor constraintEqualToConstant:36],
+        [grabber.heightAnchor constraintEqualToConstant:5]
+    ]];
+
+    // The panel keeps running inside its own navigation controller; hosting it
+    // as a child leaves the ‹ chevron and the page transitions untouched.
+    [self addChildViewController:_SaoqiangWCAssetsNav];
+    UIView *navView = _SaoqiangWCAssetsNav.view;
+    navView.translatesAutoresizingMaskIntoConstraints = NO;
+    [card addSubview:navView];
+    [NSLayoutConstraint activateConstraints:@[
+        [navView.topAnchor constraintEqualToAnchor:grabberArea.bottomAnchor],
+        [navView.leadingAnchor constraintEqualToAnchor:card.leadingAnchor],
+        [navView.trailingAnchor constraintEqualToAnchor:card.trailingAnchor],
+        [navView.bottomAnchor constraintEqualToAnchor:card.bottomAnchor]
+    ]];
+    [_SaoqiangWCAssetsNav didMoveToParentViewController:self];
+
+    UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(SaoqiangWCAssetsPanChanged:)];
+    pan.delegate = self;
+    [card addGestureRecognizer:pan];
+}
+
+- (void)viewWillLayoutSubviews {
+    [super viewWillLayoutSubviews];
+    if (_SaoqiangWCAssetsDragging) return;
+    CGFloat height = CGRectGetHeight(self.view.bounds);
+    if (height <= 0) return;
+    CGFloat fraction = _SaoqiangWCAssetsExpanded ? SaoqiangWCAssetsSheetExpandedFraction : SaoqiangWCAssetsSheetCollapsedFraction;
+    _SaoqiangWCAssetsHeight.constant = floor(height * fraction);
+}
+
+- (BOOL)SaoqiangWCAssetsExpanded { return _SaoqiangWCAssetsExpanded; }
+
+- (void)SaoqiangWCAssetsSetExpanded:(BOOL)expanded animated:(BOOL)animated {
+    _SaoqiangWCAssetsExpanded = expanded;
+    CGFloat height = CGRectGetHeight(self.view.bounds);
+    if (height > 0) {
+        CGFloat fraction = expanded ? SaoqiangWCAssetsSheetExpandedFraction : SaoqiangWCAssetsSheetCollapsedFraction;
+        _SaoqiangWCAssetsHeight.constant = floor(height * fraction);
+    }
+    _SaoqiangWCAssetsDim.backgroundColor = [UIColor.blackColor colorWithAlphaComponent:expanded ? 0.42 : 0.18];
+    if (!animated) { [self.view layoutIfNeeded]; return; }
+    [UIView animateWithDuration:0.34 delay:0 usingSpringWithDamping:0.9 initialSpringVelocity:0.12
+                        options:UIViewAnimationOptionCurveEaseOut animations:^{ [self.view layoutIfNeeded]; } completion:nil];
+}
+
+// Only vertical drags are ours; anything that lands in a scroll view keeps
+// scrolling. The header strip (grabber + navigation bar) always resizes.
+- (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gestureRecognizer {
+    if (![gestureRecognizer isKindOfClass:UIPanGestureRecognizer.class]) return NO;
+    UIPanGestureRecognizer *pan = (UIPanGestureRecognizer *)gestureRecognizer;
+    CGPoint velocity = [pan velocityInView:_SaoqiangWCAssetsCard];
+    CGPoint translation = [pan translationInView:_SaoqiangWCAssetsCard];
+    CGFloat vertical = fabs(velocity.y) > 1 ? velocity.y : translation.y;
+    CGFloat horizontal = fabs(velocity.x) > 1 ? velocity.x : translation.x;
+    if (fabs(vertical) <= fabs(horizontal)) return NO;
+    CGPoint point = [pan locationInView:_SaoqiangWCAssetsCard];
+    if (point.y <= SaoqiangWCAssetsSheetGrabberHeight + 52) return YES;
+    UIView *hit = [_SaoqiangWCAssetsCard hitTest:point withEvent:nil];
+    for (UIView *view = hit; view && view != _SaoqiangWCAssetsCard; view = view.superview)
+        if ([view isKindOfClass:UIScrollView.class]) return NO;
+    return YES;
+}
+
+- (void)SaoqiangWCAssetsPanChanged:(UIPanGestureRecognizer *)pan {
+    CGFloat height = CGRectGetHeight(self.view.bounds);
+    if (height <= 0) return;
+    CGFloat minimum = floor(height * SaoqiangWCAssetsSheetCollapsedFraction);
+    CGFloat maximum = floor(height * SaoqiangWCAssetsSheetExpandedFraction);
+    switch (pan.state) {
+        case UIGestureRecognizerStateBegan:
+            _SaoqiangWCAssetsStartHeight = _SaoqiangWCAssetsHeight.constant > 0 ? _SaoqiangWCAssetsHeight.constant : minimum;
+            _SaoqiangWCAssetsDragging = YES;
+            break;
+        case UIGestureRecognizerStateChanged: {
+            CGFloat moved = [pan translationInView:self.view].y;
+            CGFloat current = MIN(maximum, MAX(minimum, _SaoqiangWCAssetsStartHeight - moved));
+            _SaoqiangWCAssetsHeight.constant = current;
+            CGFloat progress = (maximum > minimum) ? (current - minimum) / (maximum - minimum) : 0;
+            _SaoqiangWCAssetsDim.backgroundColor = [UIColor.blackColor colorWithAlphaComponent:0.18 + 0.24 * progress];
+            [self.view layoutIfNeeded];
+            break;
+        }
+        case UIGestureRecognizerStateEnded:
+        case UIGestureRecognizerStateCancelled: {
+            _SaoqiangWCAssetsDragging = NO;
+            CGFloat velocity = [pan velocityInView:self.view].y;
+            CGFloat current = _SaoqiangWCAssetsHeight.constant;
+            BOOL expand;
+            if (velocity < -300) expand = YES;
+            else if (velocity > 300) expand = NO;
+            else expand = current - minimum >= (maximum - minimum) / 2.0;
+            [self SaoqiangWCAssetsSetExpanded:expand animated:YES];
+            break;
+        }
+        default: break;
+    }
+}
+
+- (void)SaoqiangWCAssetsDimTapped {
+    if (_SaoqiangWCAssetsExpanded) { [self SaoqiangWCAssetsSetExpanded:NO animated:YES]; return; }
+    UIViewController *panel = _SaoqiangWCAssetsNav.viewControllers.firstObject;
+    [self dismissViewControllerAnimated:YES completion:^{
+        if (SaoqiangWCAssetsPresentedController == panel) SaoqiangWCAssetsPresentedController = nil;
+    }];
+}
+@end
+
 @interface SaoqiangWCAssetsController : UIViewController <UITableViewDataSource, UITableViewDelegate, UISearchBarDelegate, UIDocumentPickerDelegate, UIAdaptivePresentationControllerDelegate, UIGestureRecognizerDelegate>
+@property(nonatomic,weak) SaoqiangWCAssetsSheetHost *SaoqiangWCAssetsSheet;
 @property(nonatomic,strong) UIView *SaoqiangWCAssetsHomeView;
 @property(nonatomic,strong) UIView *SaoqiangWCAssetsIconPage;
 @property(nonatomic,strong) UIView *SaoqiangWCAssetsThemePage;
@@ -571,6 +770,11 @@ typedef NS_ENUM(NSInteger, SaoqiangWCAssetsFilterKind) {
 @property(nonatomic) NSUInteger SaoqiangWCAssetsCurrentCount;
 @property(nonatomic) NSUInteger SaoqiangWCAssetsSVGCount;
 @property(nonatomic) NSUInteger SaoqiangWCAssetsPNGCount;
+@property(nonatomic) NSUInteger SaoqiangWCAssetsNativeCount;
+@property(nonatomic,strong) UILabel *SaoqiangWCAssetsTotalValue;
+@property(nonatomic,strong) UILabel *SaoqiangWCAssetsPNGValue;
+@property(nonatomic,strong) UILabel *SaoqiangWCAssetsSVGValue;
+@property(nonatomic,strong) UILabel *SaoqiangWCAssetsNativeValue;
 @property(nonatomic) NSUInteger SaoqiangWCAssetsFeedbackGeneration;
 @property(nonatomic,strong) NSDictionary *SaoqiangWCAssetsPendingExport;
 @property(nonatomic,weak) id<UIGestureRecognizerDelegate> SaoqiangWCAssetsSavedPopDelegate;
@@ -820,7 +1024,7 @@ static void SaoqiangWCAssetsInstallGlobalPress(void) {
         return;
     }
     if (self.presentingViewController) {
-        [self dismissViewControllerAnimated:YES completion:^{
+        [[self SaoqiangWCAssetsDismissTarget] dismissViewControllerAnimated:YES completion:^{
             if (SaoqiangWCAssetsPresentedController == self) SaoqiangWCAssetsPresentedController = nil;
         }];
     }
@@ -856,6 +1060,25 @@ static void SaoqiangWCAssetsInstallGlobalPress(void) {
         [back.heightAnchor constraintEqualToConstant:36]
     ]];
     self.SaoqiangWCAssetsFallbackBack = back;
+}
+// 0.11.40: in card mode the header strip is the resize handle. Not everyone
+// will try dragging it, so the same two states get a chevron in the bar.
+- (void)SaoqiangWCAssetsInstallSheetToggleIfNeeded {
+    SaoqiangWCAssetsSheetHost *host = self.SaoqiangWCAssetsSheet;
+    if (!host) return;
+    BOOL expanded = [host SaoqiangWCAssetsExpanded];
+    UIBarButtonItem *toggle = [[UIBarButtonItem alloc]
+        initWithImage:SaoqiangWCAssetsSymbol(expanded ? @"chevron.down" : @"chevron.up")
+                style:UIBarButtonItemStylePlain target:self action:@selector(SaoqiangWCAssetsSheetToggleTapped)];
+    toggle.tintColor = UIColor.labelColor;
+    toggle.accessibilityLabel = expanded ? @"收起到半屏" : @"放大";
+    self.navigationItem.rightBarButtonItem = toggle;
+}
+- (void)SaoqiangWCAssetsSheetToggleTapped {
+    SaoqiangWCAssetsSheetHost *host = self.SaoqiangWCAssetsSheet;
+    if (!host) return;
+    [host SaoqiangWCAssetsSetExpanded:![host SaoqiangWCAssetsExpanded] animated:YES];
+    [self SaoqiangWCAssetsInstallSheetToggleIfNeeded];
 }
 // Take over the nav controller's interactive pop so a right swipe on a
 // sub-page cannot jump straight back to the WCRefine hub. Sub-pages use our
@@ -1056,9 +1279,54 @@ static void SaoqiangWCAssetsInstallGlobalPress(void) {
     [filter setTitleTextAttributes:@{NSForegroundColorAttributeName:UIColor.whiteColor} forState:UIControlStateSelected];
     [filter addTarget:self action:@selector(SaoqiangWCAssetsFilterChanged) forControlEvents:UIControlEventValueChanged];
 
+    // 0.11.40: capture summary strip, sat above the 清空 row. Shows how many
+    // icons were grabbed and how they break down by format. Type sizes stay
+    // small on purpose: in a 3/5-height panel this row must not take space the
+    // list needs.
+    UIView *stats = [UIView new];
+    stats.backgroundColor = UIColor.secondarySystemGroupedBackgroundColor;
+    stats.layer.cornerRadius = 12;
+    stats.translatesAutoresizingMaskIntoConstraints = NO;
+    SaoqiangWCAssetsMarkOwnView(stats);
+
+    UIStackView *statRow = [UIStackView new];
+    statRow.axis = UILayoutConstraintAxisHorizontal;
+    statRow.distribution = UIStackViewDistributionFillEqually;
+    statRow.spacing = 2;
+    statRow.translatesAutoresizingMaskIntoConstraints = NO;
+    [stats addSubview:statRow];
+
+    NSArray *statTitles = @[@"总数", @"PNG", @"SVG", @"原生"];
+    NSArray *statColors = @[UIColor.labelColor, UIColor.systemBlueColor, UIColor.systemPurpleColor, UIColor.systemGreenColor];
+    NSMutableArray *statValues = [NSMutableArray new];
+    for (NSUInteger index = 0; index < statTitles.count; index++) {
+        UILabel *value = SaoqiangWCAssetsLabel(17, UIFontWeightSemibold);
+        value.text = @"0";
+        value.font = [UIFont monospacedDigitSystemFontOfSize:17 weight:UIFontWeightSemibold];
+        value.textColor = statColors[index];
+        value.textAlignment = NSTextAlignmentCenter;
+        value.adjustsFontSizeToFitWidth = YES;
+        value.minimumScaleFactor = 0.7;
+        UILabel *caption = SaoqiangWCAssetsLabel(10, UIFontWeightRegular);
+        caption.text = statTitles[index];
+        caption.textColor = UIColor.secondaryLabelColor;
+        caption.textAlignment = NSTextAlignmentCenter;
+        UIStackView *column = [[UIStackView alloc] initWithArrangedSubviews:@[value, caption]];
+        column.axis = UILayoutConstraintAxisVertical;
+        column.alignment = UIStackViewAlignmentFill;
+        column.spacing = 0;
+        [statRow addArrangedSubview:column];
+        [statValues addObject:value];
+    }
+    self.SaoqiangWCAssetsTotalValue = statValues[0];
+    self.SaoqiangWCAssetsPNGValue = statValues[1];
+    self.SaoqiangWCAssetsSVGValue = statValues[2];
+    self.SaoqiangWCAssetsNativeValue = statValues[3];
+    stats.accessibilityLabel = @"抓取统计：总数、PNG、SVG、原生";
+
     self.SaoqiangWCAssetsClearButton = SaoqiangWCAssetsButton(@"清空", self, @selector(SaoqiangWCAssetsConfirmClear));
 
-    for (UIView *view in @[iconTitle, actionRow, startHint, filter, self.SaoqiangWCAssetsClearButton]) {
+    for (UIView *view in @[iconTitle, actionRow, startHint, filter, stats, self.SaoqiangWCAssetsClearButton]) {
         view.translatesAutoresizingMaskIntoConstraints = NO;
         [iconPage addSubview:view];
     }
@@ -1089,9 +1357,9 @@ static void SaoqiangWCAssetsInstallGlobalPress(void) {
 
     UIButton *clear = self.SaoqiangWCAssetsClearButton;
     [NSLayoutConstraint activateConstraints:@[
-        [iconTitle.topAnchor constraintEqualToAnchor:iconPage.topAnchor constant:16],
+        [iconTitle.topAnchor constraintEqualToAnchor:iconPage.topAnchor constant:12],
         [iconTitle.centerXAnchor constraintEqualToAnchor:iconPage.centerXAnchor],
-        [actionRow.topAnchor constraintEqualToAnchor:iconTitle.bottomAnchor constant:20],
+        [actionRow.topAnchor constraintEqualToAnchor:iconTitle.bottomAnchor constant:14],
         [actionRow.centerXAnchor constraintEqualToAnchor:iconPage.centerXAnchor],
         [actionRow.heightAnchor constraintEqualToConstant:36],
         [startButton.leadingAnchor constraintEqualToAnchor:actionRow.leadingAnchor],
@@ -1108,11 +1376,19 @@ static void SaoqiangWCAssetsInstallGlobalPress(void) {
         [filter.heightAnchor constraintEqualToConstant:34],
         [filter.leadingAnchor constraintEqualToAnchor:iconPage.leadingAnchor constant:20],
         [filter.trailingAnchor constraintEqualToAnchor:iconPage.trailingAnchor constant:-20],
-        [clear.topAnchor constraintEqualToAnchor:filter.bottomAnchor constant:10],
+        [statRow.topAnchor constraintEqualToAnchor:stats.topAnchor constant:6],
+        [statRow.bottomAnchor constraintEqualToAnchor:stats.bottomAnchor constant:-6],
+        [statRow.leadingAnchor constraintEqualToAnchor:stats.leadingAnchor constant:6],
+        [statRow.trailingAnchor constraintEqualToAnchor:stats.trailingAnchor constant:-6],
+        [stats.topAnchor constraintEqualToAnchor:filter.bottomAnchor constant:8],
+        [stats.leadingAnchor constraintEqualToAnchor:iconPage.leadingAnchor constant:20],
+        [stats.trailingAnchor constraintEqualToAnchor:iconPage.trailingAnchor constant:-20],
+        [stats.heightAnchor constraintEqualToConstant:46],
+        [clear.topAnchor constraintEqualToAnchor:stats.bottomAnchor constant:6],
         [clear.trailingAnchor constraintEqualToAnchor:iconPage.trailingAnchor constant:-20],
         [clear.widthAnchor constraintEqualToConstant:56],
-        [clear.heightAnchor constraintEqualToConstant:34],
-        [table.topAnchor constraintEqualToAnchor:clear.bottomAnchor constant:8],
+        [clear.heightAnchor constraintEqualToConstant:32],
+        [table.topAnchor constraintEqualToAnchor:clear.bottomAnchor constant:6],
         [table.leadingAnchor constraintEqualToAnchor:iconPage.leadingAnchor],
         [table.trailingAnchor constraintEqualToAnchor:iconPage.trailingAnchor],
         [table.bottomAnchor constraintEqualToAnchor:iconPage.bottomAnchor]
@@ -1200,13 +1476,17 @@ static void SaoqiangWCAssetsInstallGlobalPress(void) {
     // 全选 / 导出所选 / 导出目录 / 复制识别诊断 / 关闭 五个按钮已按需求移除。
 }
 - (void)viewWillAppear:(BOOL)animated {
-    [super viewWillAppear:animated]; SaoqiangWCAssetsPresentedController = self; self.presentationController.delegate = self;
+    [super viewWillAppear:animated]; SaoqiangWCAssetsPresentedController = self;
+    // In the 0.11.40 card host the presentation controller belongs to the host,
+    // so its delegate stays untouched and dismissal callbacks keep one owner.
+    if (!self.SaoqiangWCAssetsSheet) self.presentationController.delegate = self;
     // The ‹ chevron lives in navigationItem, so it only exists on screen while
     // a navigation bar is visible. The panel is pushed by WCRefine's plugin hub
     // or presented by the global gesture inside our own UINavigationController;
     // both must keep the bar on, otherwise the panel loses its only way out.
     self.navigationController.navigationBarHidden = NO;
     [self SaoqiangWCAssetsInstallFallbackBackIfNeeded];
+    [self SaoqiangWCAssetsInstallSheetToggleIfNeeded];
     // Take over interactive pop while this panel is visible so sub-page swipes
     // step back to home instead of popping straight to the plugin hub.
     UINavigationController *nav = self.navigationController;
@@ -1259,9 +1539,16 @@ static void SaoqiangWCAssetsInstallGlobalPress(void) {
         [self.SaoqiangWCAssetsTimer invalidate]; if (SaoqiangWCAssetsPresentedController == self) SaoqiangWCAssetsPresentedController = nil;
     }
 }
+// The gesture shortcut wraps the panel in a card host (0.11.40); dismissing the
+// host is what actually takes the panel off screen. The plugin-hub entry
+// presents the navigation controller itself, so both cases resolve to one
+// target and every close path below stays single-source.
+- (UIViewController *)SaoqiangWCAssetsDismissTarget {
+    return (UIViewController *)self.SaoqiangWCAssetsSheet ?: self;
+}
 - (void)SaoqiangWCAssetsClose {
     if (self.SaoqiangWCAssetsBusy || self.presentedViewController) return;
-    [self.view endEditing:YES]; [self dismissViewControllerAnimated:YES completion:^{
+    [self.view endEditing:YES]; [[self SaoqiangWCAssetsDismissTarget] dismissViewControllerAnimated:YES completion:^{
         if (SaoqiangWCAssetsPresentedController == self) SaoqiangWCAssetsPresentedController = nil;
     }];
 }
@@ -1284,9 +1571,9 @@ static void SaoqiangWCAssetsInstallGlobalPress(void) {
     // Our panel is presented full-screen on top of WeChat. Dismiss it first,
     // then unwind whatever page is underneath back to the main tab, so the
     // user does not have to tap back through every screen.
-    UIViewController *presenter = self.presentingViewController;
+    UIViewController *presenter = [self SaoqiangWCAssetsDismissTarget].presentingViewController;
     [self.view endEditing:YES];
-    [self dismissViewControllerAnimated:YES completion:^{
+    [[self SaoqiangWCAssetsDismissTarget] dismissViewControllerAnimated:YES completion:^{
         if (SaoqiangWCAssetsPresentedController == self) SaoqiangWCAssetsPresentedController = nil;
         dispatch_async(dispatch_get_main_queue(), ^{ SaoqiangWCAssetsUnwindWeChatHome(presenter); });
     }];
@@ -1317,10 +1604,12 @@ static void SaoqiangWCAssetsInstallGlobalPress(void) {
         NSString *query = [self.SaoqiangWCAssetsSearch.text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] ?: @"";
         SaoqiangWCAssetsFilterKind filter = self.SaoqiangWCAssetsLastListFilter; BOOL tools = self.SaoqiangWCAssetsThemeTab;
         self.SaoqiangWCAssetsCurrentCount = self.SaoqiangWCAssetsSVGCount = self.SaoqiangWCAssetsPNGCount = 0;
+        self.SaoqiangWCAssetsNativeCount = 0;
         for (SaoqiangWCAssetsRecord *record in [store SaoqiangWCAssetsSnapshot].reverseObjectEnumerator) {
             if (!SaoqiangWCAssetsIsCurrent(record, runtimeID)) continue;
             BOOL svg = SaoqiangWCAssetsIsSVG(record), png = [record.kind.uppercaseString isEqualToString:@"PNG"];
             self.SaoqiangWCAssetsCurrentCount++; self.SaoqiangWCAssetsSVGCount += svg; self.SaoqiangWCAssetsPNGCount += png;
+            self.SaoqiangWCAssetsNativeCount += SaoqiangWCAssetsIsNative(record);
             if (record.identity.length) current[record.identity] = record;
             BOOL matches = filter == SaoqiangWCAssetsFilterCurrent || (filter == SaoqiangWCAssetsFilterSVG && svg) ||
                 (filter == SaoqiangWCAssetsFilterPNG && png) || (filter == SaoqiangWCAssetsFilterNative && SaoqiangWCAssetsIsNative(record));
@@ -1380,6 +1669,12 @@ static void SaoqiangWCAssetsInstallGlobalPress(void) {
     self.SaoqiangWCAssetsSummary.text = [NSString stringWithFormat:@"总开关%@ · 抓取%@ · 主题(始终开启) · 当前 %lu · SVG %lu · PNG %lu · 已选 %lu", master ? @"开" : @"关", capturing ? @"中" : @"停", (unsigned long)self.SaoqiangWCAssetsCurrentCount, (unsigned long)self.SaoqiangWCAssetsSVGCount, (unsigned long)self.SaoqiangWCAssetsPNGCount, (unsigned long)count];
     self.SaoqiangWCAssetsScopeLabel.text = [NSString stringWithFormat:@"作用列表：%@\n%lu 显示 · %lu 已选", @[@"当前", @"SVG", @"PNG", @"原生"][self.SaoqiangWCAssetsLastListFilter], (unsigned long)self.SaoqiangWCAssetsRows.count, (unsigned long)count];
     self.SaoqiangWCAssetsClearButton.enabled = !self.SaoqiangWCAssetsBusy;
+    // 0.11.40: capture totals next to 清空. Counted over the same scope as the
+    // 当前 list, so 总数 always matches what the table would show unfiltered.
+    self.SaoqiangWCAssetsTotalValue.text = [NSString stringWithFormat:@"%lu", (unsigned long)self.SaoqiangWCAssetsCurrentCount];
+    self.SaoqiangWCAssetsPNGValue.text = [NSString stringWithFormat:@"%lu", (unsigned long)self.SaoqiangWCAssetsPNGCount];
+    self.SaoqiangWCAssetsSVGValue.text = [NSString stringWithFormat:@"%lu", (unsigned long)self.SaoqiangWCAssetsSVGCount];
+    self.SaoqiangWCAssetsNativeValue.text = [NSString stringWithFormat:@"%lu", (unsigned long)self.SaoqiangWCAssetsNativeCount];
     self.SaoqiangWCAssetsFilter.enabled = !self.SaoqiangWCAssetsBusy;
     self.SaoqiangWCAssetsThemeTabButton.enabled = !self.SaoqiangWCAssetsBusy;
     self.modalInPresentation = self.SaoqiangWCAssetsBusy;
@@ -1948,9 +2243,9 @@ static void SaoqiangWCAssetsUnwindWeChatHome(UIViewController *anchor) {
             [((UINavigationController *)selected) popToRootViewControllerAnimated:NO];
     } @finally { SaoqiangWCAssetsPopSuppression(); }
 }
-static void SaoqiangWCAssetsPresentPanelAtPage(UIViewController *presenter, NSInteger initialPage) {
+static void SaoqiangWCAssetsPresentPanelAtPage(UIViewController *presenter, NSInteger initialPage, BOOL sheet) {
     if (!NSThread.isMainThread) {
-        dispatch_async(dispatch_get_main_queue(), ^{ SaoqiangWCAssetsPresentPanelAtPage(presenter, initialPage); }); return;
+        dispatch_async(dispatch_get_main_queue(), ^{ SaoqiangWCAssetsPresentPanelAtPage(presenter, initialPage, sheet); }); return;
     }
     if (SaoqiangWCAssetsOwnUIActive()) return;
     UIWindow *window = presenter.view.window ?: SaoqiangWCAssetsKeyWindow();
@@ -1977,6 +2272,17 @@ static void SaoqiangWCAssetsPresentPanelAtPage(UIViewController *presenter, NSIn
         SaoqiangWCAssetsPresentedController = controller;
         SaoqiangWCAssetsMarkOwnView(nav.view);
         SaoqiangWCAssetsMarkOwnView(controller.view);
+        // 0.11.40: the gesture shortcut opens the panel as a 3/5 bottom card
+        // instead of a full-screen take-over, so WeChat stays visible behind it.
+        // The plugin-hub entry keeps the old full-screen presentation.
+        UIViewController *presented = nav;
+        if (sheet) {
+            SaoqiangWCAssetsSheetHost *host = [[SaoqiangWCAssetsSheetHost alloc] initWithNavigation:nav];
+            host.modalPresentationStyle = UIModalPresentationOverFullScreen;
+            SaoqiangWCAssetsMarkOwnView(host.view);
+            controller.SaoqiangWCAssetsSheet = host;
+            presented = host;
+        }
         // 0.11.39: switch to the shortcut's page while the panel is still off
         // screen, so the first frame the user sees is already the icon/theme
         // page. Doing it in the presentation completion showed the home page
@@ -1987,7 +2293,7 @@ static void SaoqiangWCAssetsPresentPanelAtPage(UIViewController *presenter, NSIn
             [controller SaoqiangWCAssetsShowPage:initialPage];
             controller.SaoqiangWCAssetsSkipPageAnimation = NO;
         }
-        [top presentViewController:nav animated:YES completion:^{
+        [top presentViewController:presented animated:YES completion:^{
             // Fallback only: if something reset the page while presenting, land
             // on the requested one without a transition.
             if (initialPage != 0 && SaoqiangWCAssetsPresentedController == controller && controller.SaoqiangWCAssetsPage == 0) {
@@ -1999,13 +2305,13 @@ static void SaoqiangWCAssetsPresentPanelAtPage(UIViewController *presenter, NSIn
     } @finally { SaoqiangWCAssetsPopSuppression(); }
 }
 void SaoqiangWCAssetsPresentPanel(UIViewController *presenter) {
-    SaoqiangWCAssetsPresentPanelAtPage(presenter, 0);
+    SaoqiangWCAssetsPresentPanelAtPage(presenter, 0, NO);
 }
 static void SaoqiangWCAssetsPresentIconPage(void) {
-    SaoqiangWCAssetsPresentPanelAtPage(nil, 1);
+    SaoqiangWCAssetsPresentPanelAtPage(nil, 1, YES);
 }
 static void SaoqiangWCAssetsPresentThemePage(void) {
-    SaoqiangWCAssetsPresentPanelAtPage(nil, 2);
+    SaoqiangWCAssetsPresentPanelAtPage(nil, 2, YES);
 }
 void SaoqiangWCAssetsInstallUI(void) {
 #if !TARGET_OS_SIMULATOR
