@@ -57,7 +57,7 @@ jobs:
             build/WCAssetsUI.dylib \
             "build/WCAssetsUI-${VERSION}-test.zip" \
             --title "小扒手 ${VERSION}" \
-            --notes "手势呼出直达目标页、左上角返回按钮修复版。WCAssetsUI.dylib 用 TrollFools 注入微信；WCAssetsUI-${VERSION}-test.zip 是同一次构建的 dylib + plist + README。"
+            --notes "0.11.41：修复卡片呼出时页面标题被导航栏压住；普通 UIImageView 与图层绘制的图标现在都能抓到；已缓存的图标会从 UIImage 内部恢复真实资源名。WCAssetsUI.dylib 用 TrollFools 注入微信；WCAssetsUI-${VERSION}-test.zip 是同一次构建的 dylib + plist + README。"
       - name: Native UI layout smoke check
         timeout-minutes: 8
         run: sh tests/ui-smoke.sh

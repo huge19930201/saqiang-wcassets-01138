@@ -86,7 +86,12 @@ BOOL SaoqiangWCAssetsUIName(NSString *name) {
                         SQNameHasPrefix(base, baseLength, "fileicon_") ||
                         SQNameHasPrefix(base, baseLength, "tabbar_") ||
                         SQNameHasPrefix(base, baseLength, "navigationbar_") ||
-                        SQNameHasPrefix(base, baseLength, "badge");
+                        SQNameHasPrefix(base, baseLength, "badge") ||
+                        // 0.11.41: an actual image file name is always a real
+                        // resource name, and most icon assets carry "icon" in
+                        // the stem even without the icons_ prefix.
+                        SQNameHasImageExtension(buffer, length) ||
+                        SQNameContains(base, baseLength, "icon");
                 }
             }
         }
@@ -214,7 +219,7 @@ static NSData *SaoqiangWCAssetsRender(UIImage *image) {
     if (!isfinite(size.width)||!isfinite(size.height)||size.width<=0||size.height<=0) size=image.size;
     NSString *signature=[NSString stringWithFormat:@"%@|%.2fx%.2f",info[@"revision"],size.width,size.height];
     [_lock lock]; NSDictionary *prior=[_seen objectForKey:image];
-    if (!_enabled || _pending>=16 || ([prior[@"signature"] isEqual:signature] && [prior[@"epoch"] unsignedIntegerValue]==_epoch)) { if (_pending>=16) ++_dropped; [_lock unlock]; return; }
+    if (!_enabled || _pending>=32 || ([prior[@"signature"] isEqual:signature] && [prior[@"epoch"] unsignedIntegerValue]==_epoch)) { if (_pending>=32) ++_dropped; [_lock unlock]; return; }
     if (_seen.count>1024) [_seen removeAllObjects];
     NSString *captureKey=prior[@"captureKey"]?:NSUUID.UUID.UUIDString;
     if (prior && ![prior[@"size"] isEqual:NSStringFromCGSize(size)]) captureKey=NSUUID.UUID.UUIDString;

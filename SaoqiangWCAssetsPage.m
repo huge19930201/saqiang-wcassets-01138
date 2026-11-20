@@ -145,7 +145,8 @@ static BOOL SaoqiangWCAssetsPageOffer(UIImage *image, UIView *view, SaoqiangWCAs
         NSUInteger ancestry = 0;
         static const char *const badAncestors[] = {
             "headimage","avatar","portrait","sticker","emoticon","messagecell",
-            "photocell","videocell","webimage",NULL
+            "photocell","videocell","webimage","albumcell","assetcell","photopicker",
+            "moment","camera",NULL
         };
         for (UIView *a = view; a && ancestry++ < 12; a = a.superview) {
             if ([a isKindOfClass:UIButton.class]) buttonIcon = YES;
@@ -153,8 +154,16 @@ static BOOL SaoqiangWCAssetsPageOffer(UIImage *image, UIView *view, SaoqiangWCAs
         }
         CGFloat width = image.size.width, height = image.size.height;
         BOOL small = width > 0 && height > 0 && width <= 72 && height <= 72 && width*image.scale <= 288 && height*image.scale <= 288;
-        if (!buttonIcon || excluded || !small || view.bounds.size.width > 120 || view.bounds.size.height > 120) return NO;
-        SaoqiangWCAssetsAssociateVisibleIcon(image,@"可见按钮图标 · 未取得原始名称");
+        // 0.11.40 and earlier required a UIButton ancestor here, so every icon
+        // drawn by a plain UIImageView (settings rows, custom cells, tab strips)
+        // was silently skipped — the「好多图标抓不到」report. Any small, square-ish
+        // image outside the photo/avatar block list is an icon; round corners
+        // are what keeps avatars out without their class names.
+        CALayer *layer = view.layer;
+        CGFloat shortest = MIN(view.bounds.size.width, view.bounds.size.height);
+        BOOL round = shortest > 0 && layer.cornerRadius >= shortest * 0.45;
+        if (excluded || round || !small || view.bounds.size.width > 120 || view.bounds.size.height > 120) return NO;
+        SaoqiangWCAssetsAssociateVisibleIcon(image, buttonIcon ? @"可见按钮图标 · 未取得原始名称" : @"可见图标 · 未取得原始名称");
         info = SaoqiangWCAssetsImageInfoForImage(image);
         if (!info) return NO;
     }
@@ -167,6 +176,46 @@ static BOOL SaoqiangWCAssetsPageOffer(UIImage *image, UIView *view, SaoqiangWCAs
     ++SaoqiangWCAssetsPageOffers;
     [store SaoqiangWCAssetsEnqueueVisibleImage:image displaySize:size];
     return YES;
+}
+static BOOL SaoqiangWCAssetsPageExcludedAncestors(UIView *view) {
+    static const char *const badAncestors[] = {
+        "headimage","avatar","portrait","sticker","emoticon","messagecell",
+        "photocell","videocell","webimage","albumcell","assetcell","photopicker",
+        "moment","camera",NULL
+    };
+    NSUInteger ancestry = 0;
+    for (UIView *a = view; a && ancestry++ < 12; a = a.superview)
+        if (SQNameClassExcluded(class_getName(object_getClass(a)), badAncestors)) return YES;
+    return NO;
+}
+// Some WeChat icons never become a UIImage: they are drawn straight into the
+// layer (glyph / SVG render / asset-backed content). 0.11.40 only accepted a
+// CGImage the hooks had already seen, so those views were skipped entirely.
+// Snapshot the exact CGImage that is on screen instead.
+static char SaoqiangWCAssetsLayerIconKey;
+static BOOL SaoqiangWCAssetsPageLayerOffer(UIView *view, SaoqiangWCAssetsStore *store) {
+    CALayer *layer = view.layer;
+    id contents = layer.contents;
+    if (!contents || CFGetTypeID((__bridge CFTypeRef)contents) != CGImageGetTypeID()) return NO;
+    CGImageRef cg = (__bridge CGImageRef)contents;
+    size_t pixelWidth = CGImageGetWidth(cg), pixelHeight = CGImageGetHeight(cg);
+    if (!pixelWidth || !pixelHeight || pixelWidth > 320 || pixelHeight > 320) return NO;
+    CGFloat aspect = (CGFloat)pixelWidth / (CGFloat)pixelHeight;
+    if (aspect < 0.25 || aspect > 4) return NO;
+    CGSize bounds = view.bounds.size;
+    if (!SaoqiangWCAssetsPageRectValid(view.bounds) || bounds.width > 160 || bounds.height > 160) return NO;
+    CGFloat shortest = MIN(bounds.width, bounds.height);
+    if (shortest > 0 && layer.cornerRadius >= shortest * 0.45) return NO;
+    if (SaoqiangWCAssetsPageExcludedAncestors(view)) return NO;
+    UIImage *cached = objc_getAssociatedObject(view, &SaoqiangWCAssetsLayerIconKey);
+    if (![cached isKindOfClass:UIImage.class] || cached.CGImage != cg) {
+        CGFloat scale = layer.contentsScale > 0 ? layer.contentsScale : UIScreen.mainScreen.scale;
+        cached = [UIImage imageWithCGImage:cg scale:MAX(1, scale) orientation:UIImageOrientationUp];
+        if (!cached) return NO;
+        objc_setAssociatedObject(view, &SaoqiangWCAssetsLayerIconKey, cached, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    SaoqiangWCAssetsAssociateVisibleIcon(cached, @"可见图层图标 · 未取得原始名称");
+    return SaoqiangWCAssetsPageOffer(cached, view, store);
 }
 
 static void SaoqiangWCAssetsPageWalk(UIView *view, UIWindow *window, UIView *hostView,
@@ -223,10 +272,15 @@ static void SaoqiangWCAssetsPageWalk(UIView *view, UIWindow *window, UIView *hos
             if (background != image)
                 offered = SaoqiangWCAssetsPageOffer(background, view, store) || offered;
         }
-        if (!offered && layer.contents) {
-            // Exact, already-known CGImage association only. No image reconstruction,
-            // pixel matching, arbitrary sublayer search, or view/screen rendering.
-            SaoqiangWCAssetsPageOffer(SaoqiangWCAssetsImageForLayer(layer), view, store);
+        if (!offered && layer.contents && ![view isKindOfClass:UIImageView.class] &&
+            ![view isKindOfClass:UIButton.class]) {
+            // Exact, already-known CGImage association first; otherwise snapshot
+            // the CGImage the layer is actually drawing. A rejected UIImageView
+            // or UIButton already had its own image considered, so it never
+            // re-enters through the layer path.
+            UIImage *known = SaoqiangWCAssetsImageForLayer(layer);
+            if (known) offered = SaoqiangWCAssetsPageOffer(known, view, store);
+            if (!offered) SaoqiangWCAssetsPageLayerOffer(view, store);
         }
     }
     if (depth >= SaoqiangWCAssetsPageDepthLimit) return;
@@ -293,7 +347,7 @@ void SaoqiangWCAssetsInstallPageCapture(void) {
             // while the user is scrolling — exactly when that cost is visible.
             // Leaving tracking mode fires one pass immediately afterwards, which
             // sees the same views the user scrolled to.
-            SaoqiangWCAssetsPageTimer = [NSTimer timerWithTimeInterval:0.8 repeats:YES block:^(NSTimer *timer) {
+            SaoqiangWCAssetsPageTimer = [NSTimer timerWithTimeInterval:0.4 repeats:YES block:^(NSTimer *timer) {
                 (void)timer;
                 // With the master off the timer stays installed but does no work
                 // beyond a relaxed load; no clock read and no window walk.
@@ -305,9 +359,9 @@ void SaoqiangWCAssetsInstallPageCapture(void) {
                 // hierarchy; back off instead of repeating it in the same second.
                 CFAbsoluteTime cost = CFAbsoluteTimeGetCurrent() - started;
                 SaoqiangWCAssetsPageNextAllowed = CFAbsoluteTimeGetCurrent() +
-                    (cost > 0.012 ? 2.4 : (cost > 0.005 ? 1.6 : 0.8));
+                    (cost > 0.02 ? 1.6 : (cost > 0.008 ? 0.8 : 0.4));
             }];
-            SaoqiangWCAssetsPageTimer.tolerance = 0.4;
+            SaoqiangWCAssetsPageTimer.tolerance = 0.2;
             [NSRunLoop.mainRunLoop addTimer:SaoqiangWCAssetsPageTimer forMode:NSDefaultRunLoopMode];
         });
     };

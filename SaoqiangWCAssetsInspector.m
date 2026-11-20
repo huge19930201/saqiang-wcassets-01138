@@ -317,12 +317,108 @@ void SaoqiangWCAssetsAssociateBubbleImage(UIImage *image, NSString *name, NSStri
     }
     SaoqiangWCAssetsRememberBacking(image);
 }
+// ===== 0.11.41 名称恢复 =====
+// The icons a user opens the panel for are usually already decoded and cached
+// long before 开始抓取 is tapped, so no hooked load ever names them and every row
+// came out as「无原始资源名」. UIKit keeps the asset name in the image's private
+// storage; read it through KVC (never raw ivar memory, so weak slots are safe),
+// validate it exactly like a hooked name, and memoise per image object.
+static char SaoqiangWCAssetsRecoveredNameKey;
+static NSMutableDictionary<NSString *, NSArray<NSString *> *> *SaoqiangWCAssetsNameIvarCache;
+static BOOL SaoqiangWCAssetsNameBearingIvar(const char *name) {
+    if (!name) return NO;
+    size_t length = strlen(name); char buffer[96];
+    if (!length || length >= sizeof(buffer)) return NO;
+    SQNameLowerCopy(name, length, buffer);
+    if (SQNameContains(buffer, length, "font") || SQNameContains(buffer, length, "class")) return NO;
+    // _imageName / _assetName / _cacheKeyName: anything that ends in "name".
+    return SQNameHasSuffix(buffer, length, "name");
+}
+static NSArray<NSString *> *SaoqiangWCAssetsNameIvars(Class cls) {
+    if (!cls) return @[];
+    NSString *key = NSStringFromClass(cls);
+    @synchronized (SaoqiangWCAssetsAssociationLock()) {
+        NSArray<NSString *> *cached = SaoqiangWCAssetsNameIvarCache[key];
+        if (cached) return cached;
+    }
+    NSMutableArray<NSString *> *found = [NSMutableArray new];
+    Class current = cls; NSUInteger depth = 0;
+    while (current && current != NSObject.class && depth++ < 8) {
+        unsigned count = 0; Ivar *ivars = class_copyIvarList(current, &count);
+        for (unsigned i = 0; i < count; ++i) {
+            const char *name = ivar_getName(ivars[i]);
+            const char *type = ivar_getTypeEncoding(ivars[i]);
+            if (!name || !type || type[0] != '@') continue;
+            if (!SaoqiangWCAssetsNameBearingIvar(name)) continue;
+            [found addObject:@(name)];
+        }
+        free(ivars); current = class_getSuperclass(current);
+    }
+    NSArray<NSString *> *result = found.copy;
+    @synchronized (SaoqiangWCAssetsAssociationLock()) {
+        if (!SaoqiangWCAssetsNameIvarCache) SaoqiangWCAssetsNameIvarCache = [NSMutableDictionary new];
+        SaoqiangWCAssetsNameIvarCache[key] = result;
+    }
+    return result;
+}
+static NSString *SaoqiangWCAssetsAcceptableRecoveredName(NSString *value) {
+    if (![value isKindOfClass:NSString.class] || !value.length || value.length > 240) return nil;
+    if ([value rangeOfCharacterFromSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].location != NSNotFound) return nil;
+    if (value.isAbsolutePath || [value containsString:@"/"]) return nil;
+    for (NSString *junk in @[@"(null)", @"null", @"nil", @"UIImage", @"image", @"NSNull"]) {
+        if ([value isEqualToString:junk]) return nil;
+    }
+    return SaoqiangWCAssetsSafeRendererName(value) ? value : nil;
+}
+static NSString *SaoqiangWCAssetsReadNameIvar(id object) {
+    if (!object) return nil;
+    Class cls = object_getClass(object);
+    for (NSString *ivarName in SaoqiangWCAssetsNameIvars(cls)) {
+        NSString *key = [ivarName hasPrefix:@"_"] ? [ivarName substringFromIndex:1] : ivarName;
+        if (!key.length) continue;
+        id value = nil;
+        @try { value = [object valueForKey:key]; }
+        @catch (__unused NSException *exception) { continue; }
+        NSString *accepted = SaoqiangWCAssetsAcceptableRecoveredName(value);
+        if (accepted) return accepted;
+    }
+    return nil;
+}
+NSString * _Nullable SaoqiangWCAssetsRecoveredImageName(UIImage * _Nullable image) {
+    if (![image isKindOfClass:UIImage.class] || SaoqiangWCAssetsIsOwnImage(image)) return nil;
+    @synchronized (SaoqiangWCAssetsAssociationLock()) {
+        id cached = objc_getAssociatedObject(image, &SaoqiangWCAssetsRecoveredNameKey);
+        if (cached) return cached == NSNull.null ? nil : cached;
+    }
+    NSString *found = nil;
+    @try {
+        found = SaoqiangWCAssetsReadNameIvar(image);
+        if (!found) {
+            UIImageAsset *asset = image.imageAsset;
+            if (asset) found = SaoqiangWCAssetsReadNameIvar(asset);
+        }
+    } @catch (__unused NSException *exception) { found = nil; }
+    @synchronized (SaoqiangWCAssetsAssociationLock()) {
+        objc_setAssociatedObject(image, &SaoqiangWCAssetsRecoveredNameKey, found ?: NSNull.null, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    return found;
+}
 void SaoqiangWCAssetsAssociateVisibleIcon(UIImage *image, NSString *source) {
     if (![image isKindOfClass:UIImage.class] || SaoqiangWCAssetsIsSuppressed() || SaoqiangWCAssetsIsOwnImage(image)) return;
     @synchronized(SaoqiangWCAssetsAssociationLock()) {
         if (SaoqiangWCAssetsImageInfoForImage(image)) return;
         SaoqiangWCAssetsImageInfo *info=[SaoqiangWCAssetsImageInfo new];
-        info.SaoqiangWCAssetsName=@"无原始资源名"; info.SaoqiangWCAssetsSource=source; info.SaoqiangWCAssetsSnapshotOnly=YES;
+        // 0.11.41: a page-rendered icon that was decoded before 开始抓取 has no
+        // hook metadata, but UIKit still knows the asset name internally.
+        NSString *recovered=SaoqiangWCAssetsRecoveredImageName(image);
+        if (recovered.length) {
+            info.SaoqiangWCAssetsName=recovered;
+            info.SaoqiangWCAssetsSource=@"UIImage imageNamed: · 名称从已缓存图片恢复";
+            info.SaoqiangWCAssetsSnapshotOnly=YES;
+        } else {
+            info.SaoqiangWCAssetsName=@"无原始资源名"; info.SaoqiangWCAssetsSource=source;
+            info.SaoqiangWCAssetsSnapshotOnly=YES;
+        }
         info.SaoqiangWCAssetsCapInsets=image.capInsets; info.SaoqiangWCAssetsResizingMode=image.resizingMode;
         SaoqiangWCAssetsRememberImage(image,info);
     }

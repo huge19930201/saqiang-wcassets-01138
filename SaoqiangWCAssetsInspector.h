@@ -48,6 +48,11 @@ FOUNDATION_EXPORT NSString * _Nullable SaoqiangWCAssetsObservedFilePath(UIImage 
 FOUNDATION_EXPORT void SaoqiangWCAssetsAssociateBubbleImage(UIImage *image, NSString * _Nullable name, NSString *source);
 // Only a proven toolbar/button icon context may request an unnamed UI snapshot.
 FOUNDATION_EXPORT void SaoqiangWCAssetsAssociateVisibleIcon(UIImage *image, NSString *source);
+// 0.11.41: images that were decoded before the capture session started carry no
+// metadata. UIImage keeps the asset name in its own private storage; recovering
+// it lets those already-cached icons keep their real resource name instead of
+// showing「无原始资源名」. Read-only, validated, cached per image object.
+FOUNDATION_EXPORT NSString * _Nullable SaoqiangWCAssetsRecoveredImageName(UIImage * _Nullable image);
 FOUNDATION_EXPORT void SaoqiangWCAssetsDiscoverBubbles(void);
 FOUNDATION_EXPORT NSString *SaoqiangWCAssetsBubbleDiagnostics(void);
 FOUNDATION_EXPORT void SaoqiangWCAssetsPropagateImageInfo(UIImage *input, UIImage *output, NSString *operation);

@@ -782,6 +782,14 @@ static const CGFloat SaoqiangWCAssetsSheetGrabberHeight = 18;
 @property(nonatomic) BOOL SaoqiangWCAssetsPopDelegateInstalled;
 @property(nonatomic,strong) UIButton *SaoqiangWCAssetsFallbackBack;
 @property(nonatomic) BOOL SaoqiangWCAssetsSkipPageAnimation;
+// 0.11.41: the three page containers are pinned to the controller's own view
+// with constants recomputed on every layout pass. Inside the draggable card the
+// navigation controller lives in a child container, and its safe-area insets do
+// not always include the bar there — pinning to the safe-area guide put the page
+// titles underneath the bar. These two constraints always resolve to the bar's
+// bottom edge and to the real bottom inset.
+@property(nonatomic,strong) NSLayoutConstraint *SaoqiangWCAssetsPagesTop;
+@property(nonatomic,strong) NSLayoutConstraint *SaoqiangWCAssetsPagesBottom;
 - (void)SaoqiangWCAssetsRefresh:(BOOL)reset;
 - (void)SaoqiangWCAssetsPreviewRecord:(SaoqiangWCAssetsRecord *)record;
 - (void)SaoqiangWCAssetsUpdateSelection;
@@ -1136,14 +1144,26 @@ static void SaoqiangWCAssetsInstallGlobalPress(void) {
     self.SaoqiangWCAssetsThemePage = themePage;
     iconPage.hidden = YES;
     themePage.hidden = YES;
+    // All three pages share one host container so the top/bottom padding is a
+    // single pair of constants (see -viewDidLayoutSubviews).
+    UIView *pagesHost = [UIView new];
+    pagesHost.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:pagesHost];
+    self.SaoqiangWCAssetsPagesTop = [pagesHost.topAnchor constraintEqualToAnchor:self.view.topAnchor constant:0];
+    self.SaoqiangWCAssetsPagesBottom = [pagesHost.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor constant:0];
+    [NSLayoutConstraint activateConstraints:@[
+        self.SaoqiangWCAssetsPagesTop, self.SaoqiangWCAssetsPagesBottom,
+        [pagesHost.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [pagesHost.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor]
+    ]];
     for (UIView *page in @[home, iconPage, themePage]) {
         page.translatesAutoresizingMaskIntoConstraints = NO;
-        [self.view addSubview:page];
+        [pagesHost addSubview:page];
         [NSLayoutConstraint activateConstraints:@[
-            [page.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor],
-            [page.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor],
-            [page.topAnchor constraintEqualToAnchor:safe.topAnchor],
-            [page.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor]
+            [page.leadingAnchor constraintEqualToAnchor:pagesHost.leadingAnchor],
+            [page.trailingAnchor constraintEqualToAnchor:pagesHost.trailingAnchor],
+            [page.topAnchor constraintEqualToAnchor:pagesHost.topAnchor],
+            [page.bottomAnchor constraintEqualToAnchor:pagesHost.bottomAnchor]
         ]];
     }
 
@@ -1450,6 +1470,33 @@ static void SaoqiangWCAssetsInstallGlobalPress(void) {
 
     [self SaoqiangWCAssetsRefresh:YES];
 }
+// The page titles must clear the navigation bar. Inside the draggable card the
+// nav controller is hosted in a child container, and its safe-area insets were
+// arriving as zero there, so pinning to safeAreaLayoutGuide.left the titles
+// half-hidden behind the bar. Resolve the real bar bottom + real bottom inset
+// from the window on every layout pass instead.
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    CGFloat top = self.view.safeAreaInsets.top;
+    UINavigationBar *bar = self.navigationController.navigationBar;
+    if (bar && bar.window && !bar.hidden) {
+        CGRect rect = [bar convertRect:bar.bounds toView:self.view];
+        if (isfinite(rect.origin.y) && isfinite(rect.size.height)) top = MAX(top, CGRectGetMaxY(rect));
+    }
+    CGFloat bottom = self.view.safeAreaInsets.bottom;
+    UIWindow *window = self.view.window;
+    if (window) {
+        CGRect here = [self.view convertRect:self.view.bounds toView:window];
+        CGFloat clipped = MAX(0, CGRectGetMaxY(here) - CGRectGetMaxY(window.bounds));
+        bottom = MAX(bottom, window.safeAreaInsets.bottom - clipped);
+    }
+    if (!isfinite(top) || top < 0) top = 0;
+    if (!isfinite(bottom) || bottom < 0) bottom = 0;
+    // Two points of breathing room so a 20pt title never touches the blur edge.
+    top += 2;
+    if (fabs(self.SaoqiangWCAssetsPagesTop.constant - top) > 0.5) self.SaoqiangWCAssetsPagesTop.constant = top;
+    if (fabs(self.SaoqiangWCAssetsPagesBottom.constant + bottom) > 0.5) self.SaoqiangWCAssetsPagesBottom.constant = -bottom;
+}
 - (void)SaoqiangWCAssetsBuildTools {
     UIScrollView *scroll = [UIScrollView new]; self.SaoqiangWCAssetsToolsScroll = scroll; scroll.translatesAutoresizingMaskIntoConstraints = NO;
     scroll.keyboardDismissMode = UIScrollViewKeyboardDismissModeOnDrag; scroll.hidden = YES; [self.SaoqiangWCAssetsThemePage addSubview:scroll];
@@ -1525,6 +1572,10 @@ static void SaoqiangWCAssetsInstallGlobalPress(void) {
     [super viewDidDisappear:animated]; [self.SaoqiangWCAssetsTimer invalidate];
     [self SaoqiangWCAssetsRestorePopDelegate];
     if (self.SaoqiangWCAssetsOwnUICounted) { self.SaoqiangWCAssetsOwnUICounted = NO; SaoqiangWCAssetsNoteOwnUI(NO); }
+    // 0.11.41: a capture pass is refused while our own UI is on screen, so the
+    //「开始抓取」tap inside the panel never samples anything. Sample once as soon
+    // as the panel is gone, instead of waiting for the next timer tick.
+    dispatch_async(dispatch_get_main_queue(), ^{ SaoqiangWCAssetsCaptureVisiblePage(); });
 }
 - (void)dealloc {
     [_SaoqiangWCAssetsTimer invalidate];
