@@ -1508,9 +1508,12 @@ static void SaoqiangWCAssetsInstallGlobalPress(void) {
     // the bar is created after the first layout pass.
     UINavigationBar *bar = self.navigationController.navigationBar;
     if (bar && !self.SaoqiangWCAssetsPagesBarGap && self.SaoqiangWCAssetsPagesHost) {
+        // 0.11.43: the 10pt gap only just cleared the bar, so every page title
+        // still looked jammed against it (「名称不挡住了，但还是太上了」).
+        // 26pt below the bar's own bottom edge reads as a real header inset.
         NSLayoutConstraint *gap = [NSLayoutConstraint constraintWithItem:self.SaoqiangWCAssetsPagesHost
             attribute:NSLayoutAttributeTop relatedBy:NSLayoutRelationGreaterThanOrEqual
-            toItem:bar attribute:NSLayoutAttributeBottom multiplier:1 constant:10];
+            toItem:bar attribute:NSLayoutAttributeBottom multiplier:1 constant:26];
         gap.active = YES;
         self.SaoqiangWCAssetsPagesBarGap = gap;
     }

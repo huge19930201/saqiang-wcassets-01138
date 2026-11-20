@@ -290,6 +290,9 @@ static BOOL SaoqiangWCAssetsSVGWrapper(id value) {
 static void SaoqiangWCAssetsBindSVG(id result, NSString *name, NSData *raw, NSString *source) {
     if (!SaoqiangWCAssetsSafeRendererName(name) || !SaoqiangWCAssetsCanCapture()) return;
     if ([result isKindOfClass:UIImage.class]) {
+        // 0.11.43: SVG results are rendered into a plain UIImage, so the CGImage
+        // memo is the only thing a layer.contents icon can be matched against.
+        SaoqiangWCAssetsRememberCGName(result, name);
         SaoqiangWCAssetsSourceScope *scope = (__bridge id)SaoqiangWCAssetsCurrentSourceScope;
         BOOL bubble = scope.candidateBubble && SaoqiangWCAssetsSameResourceName(scope.name, name);
         if (raw || bubble) SaoqiangWCAssetsAssociateSourceImage(result, name, raw, source, bubble);
@@ -324,6 +327,87 @@ static id SaoqiangWCAssetsCallNamedSVG(NSString *name, NSString *source, NSData 
         SaoqiangWCAssetsBindSVG(result, scope.name, scope.raw, source);
     }
     return result;
+}
+// ===== 0.11.43：微信自家图标的主入口是 MMThemeManager，不是 UIKit =====
+// Reference review (WeChatUIGrabber): WeChat does not load its toolbar / list /
+// settings icons through +[UIImage imageNamed:]. Every one of them is served by
+// the theme manager, whose two name-bearing routes are
+//   -[MMThemeManager imageNamed:]                                           (raster)
+//   -[MMThemeManager svgImageNamed:size:color:alpha:angle:ignoreNotFound:]  (SVG)
+// Hooking only UIKit left those loads completely anonymous, so the page sampler
+// had nothing to attach and every row fell back to「无原始资源名」. Both routes
+// are observe-and-forward: the argument is the resource name, the return value
+// is the exact object that later lands in a UIImageView or button.
+static IMP SaoqiangWCAssetsOriginalThemeNamed;
+static IMP SaoqiangWCAssetsOriginalThemeSVG;
+static NSString * const SaoqiangWCAssetsThemeNamedSource = @"运行时 MMThemeManager imageNamed:";
+static NSString * const SaoqiangWCAssetsThemeSVGSource = @"运行时 MMThemeManager svgImageNamed:…:ignoreNotFound:";
+static UIImage *SaoqiangWCAssetsThemeNamed(id receiver, SEL cmd, NSString *name) {
+    UIImage *(*original)(id, SEL, NSString *) = (UIImage *(*)(id, SEL, NSString *))SaoqiangWCAssetsOriginalThemeNamed;
+    if (!original) return nil;
+    if (!SaoqiangWCAssetsMasterEnabled()) return original(receiver, cmd, name);
+    if (!SaoqiangWCAssetsIconCaptureActive()) {
+        // Same reasoning as +imageNamed: the icons the panel exists for are
+        // loaded before 开始抓取, so keep the CGImage→name memo warm anyway.
+        UIImage *image = original(receiver, cmd, name);
+        SaoqiangWCAssetsRememberCGName(image, name);
+        return image;
+    }
+    UIImage *image;
+    {
+        ++SaoqiangWCAssetsHookDepth;
+        unsigned *__attribute__((cleanup(SaoqiangWCAssetsDepthRelease))) release = &SaoqiangWCAssetsHookDepth;
+        (void)release;
+        image = SaoqiangWCAssetsCallNamedSource(SaoqiangWCAssetsSafeRendererName(name) ? name : @"", SaoqiangWCAssetsThemeNamedSource, NO, ^id {
+            return original(receiver, cmd, name);
+        });
+    }
+    // Remember the name even when the record whitelist rejects it: a displayed
+    // page icon with a real, checkable name beats another empty row.
+    SaoqiangWCAssetsRememberCGName(image, name);
+    if (!SaoqiangWCAssetsHookDepth) SaoqiangWCAssetsCapture(image, name, SaoqiangWCAssetsThemeNamedSource, nil, NO);
+    return image;
+}
+static id SaoqiangWCAssetsThemeSVG(id receiver, SEL cmd, id name, CGSize size, id color, double alpha, int angle, BOOL ignoreNotFound) {
+    id (*original)(id, SEL, id, CGSize, id, double, int, BOOL) = (id (*)(id, SEL, id, CGSize, id, double, int, BOOL))SaoqiangWCAssetsOriginalThemeSVG;
+    if (!original) return nil;
+    if (![name isKindOfClass:NSString.class] || !SaoqiangWCAssetsSafeRendererName(name))
+        return original(receiver, cmd, name, size, color, alpha, angle, ignoreNotFound);
+    if (!SaoqiangWCAssetsMasterEnabled()) return original(receiver, cmd, name, size, color, alpha, angle, ignoreNotFound);
+    if (!SaoqiangWCAssetsIconCaptureActive()) {
+        id image = original(receiver, cmd, name, size, color, alpha, angle, ignoreNotFound);
+        if ([image isKindOfClass:UIImage.class]) SaoqiangWCAssetsRememberCGName(image, name);
+        return image;
+    }
+    return SaoqiangWCAssetsCallNamedSVG(name, SaoqiangWCAssetsThemeSVGSource, nil, ^id {
+        return original(receiver, cmd, name, size, color, alpha, angle, ignoreNotFound);
+    });
+}
+// Only an exact, locally-owned method with the reviewed ABI is replaced. An
+// inherited method is never mutated, and a signature mismatch leaves it alone.
+static void SaoqiangWCAssetsInstallThemeRoute(Class cls, SEL sel, IMP replacement, IMP *original, BOOL svg) {
+    if (!cls || !sel) return;
+    Method m = class_getInstanceMethod(cls, sel); if (!m) return;
+    NSMethodSignature *s = [NSMethodSignature signatureWithObjCTypes:method_getTypeEncoding(m)];
+    BOOL valid = svg ? (s.numberOfArguments == 8 && SaoqiangWCAssetsObjectType(s.methodReturnType) &&
+                        !strcmp([s getArgumentTypeAtIndex:2], "@") &&
+                        !strcmp([s getArgumentTypeAtIndex:3], @encode(CGSize)) &&
+                        !strcmp([s getArgumentTypeAtIndex:4], "@"))
+                     : SaoqiangWCAssetsObjectsSignature(s, 3);
+    if (!valid) return;
+    SaoqiangWCAssetsReplace(cls, sel, replacement, original);
+}
+static void SaoqiangWCAssetsInstallThemeManagerHooks(void) {
+    static BOOL installed;
+    if (installed) return;
+    // The class only exists inside the WeChat binary; retry on the next call
+    // instead of latching a failed attempt for the whole process lifetime.
+    Class cls = NSClassFromString(@"MMThemeManager");
+    if (!SaoqiangWCAssetsHostClass(cls)) return;
+    SaoqiangWCAssetsInstallThemeRoute(cls, @selector(imageNamed:), (IMP)SaoqiangWCAssetsThemeNamed, &SaoqiangWCAssetsOriginalThemeNamed, NO);
+    SaoqiangWCAssetsInstallThemeRoute(cls, NSSelectorFromString(@"svgImageNamed:size:color:alpha:angle:ignoreNotFound:"),
+        (IMP)SaoqiangWCAssetsThemeSVG, &SaoqiangWCAssetsOriginalThemeSVG, YES);
+    installed = YES;
 }
 static void SaoqiangWCAssetsDiscoverRawSVG(void) {
     Class cls = NSClassFromString(@"WCSVGImage"); if (!SaoqiangWCAssetsHostClass(cls)) return;
@@ -416,6 +500,9 @@ void SaoqiangWCAssetsDiscoverSVG(void) {
     NSCAssert(NSThread.isMainThread, @"SVG discovery on main thread");
     if (!SaoqiangWCAssetsInstalled) SaoqiangWCAssetsInstalled = [NSMutableSet new];
     SaoqiangWCAssetsDiagnostics = [NSMutableArray new]; SaoqiangWCAssetsDiscoverRawSVG(); SaoqiangWCAssetsDiscoverNamedSVG(); SaoqiangWCAssetsDiscoverSVGGetters();
+    // The theme manager is the route WeChat actually uses for its own icons;
+    // install it here as well because the class may only be visible now.
+    SaoqiangWCAssetsInstallThemeManagerHooks();
     unsigned count = 0; Class *classes = objc_copyClassList(&count);
     NSString *prefix = [NSBundle.mainBundle.bundlePath stringByAppendingString:@"/"];
     for (unsigned i=0;i<count;i++) {
@@ -499,6 +586,9 @@ static void SaoqiangWCAssetsInstallHooks(void) {
     SaoqiangWCAssetsReplace(UIImage.class,@selector(initWithData:),(IMP)SaoqiangWCAssetsInitData,(IMP *)&SaoqiangWCAssetsOriginalInitData);
     SaoqiangWCAssetsReplace(UIImage.class,@selector(initWithData:scale:),(IMP)SaoqiangWCAssetsInitDataScale,(IMP *)&SaoqiangWCAssetsOriginalInitDataScale);
     SaoqiangWCAssetsReplace(UIImage.class,@selector(initWithContentsOfFile:),(IMP)SaoqiangWCAssetsInitFile,(IMP *)&SaoqiangWCAssetsOriginalInitFile);
+    // WeChat's own theme loader. Installed here so the memo starts filling at
+    // process start, long before the user opens the panel and taps 开始抓取.
+    SaoqiangWCAssetsInstallThemeManagerHooks();
     for (NSString *name in @[@"resizableImageWithCapInsets:",@"resizableImageWithCapInsets:resizingMode:",@"stretchableImageWithLeftCapWidth:topCapHeight:",@"imageWithRenderingMode:"]) {
         SEL sel=NSSelectorFromString(name); Method m=class_getInstanceMethod(UIImage.class,sel); if (!m) continue;
         IMP original=method_getImplementation(m); id block;

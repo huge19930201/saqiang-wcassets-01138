@@ -418,6 +418,17 @@ NSString * _Nullable SaoqiangWCAssetsRecoveredImageName(UIImage * _Nullable imag
             UIImageAsset *asset = image.imageAsset;
             if (asset) found = SaoqiangWCAssetsReadNameIvar(asset);
         }
+        // 0.11.43: CoreUI-backed icons keep the catalog name on a private image
+        // provider rather than on the UIImage itself. The reference tweak reads
+        // the same object, so mirror it: peel one level and scan its name ivars.
+        for (NSString *provider in @[@"_cuiImage", @"cuiImage", @"_CUIImage"]) {
+            if (found) break;
+            id value = nil;
+            @try { value = [image valueForKey:provider]; }
+            @catch (__unused NSException *exception) { continue; }
+            if (!value || value == image || ![value isKindOfClass:NSObject.class]) continue;
+            found = SaoqiangWCAssetsReadNameIvar(value);
+        }
     } @catch (__unused NSException *exception) { found = nil; }
     @synchronized (SaoqiangWCAssetsAssociationLock()) {
         objc_setAssociatedObject(image, &SaoqiangWCAssetsRecoveredNameKey, found ?: NSNull.null, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
